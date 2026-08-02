@@ -22,7 +22,7 @@ class AlertEngine:
     def rules(self) -> list[dict[str, Any]]:
         try:
             value = yaml.safe_load(self.rules_path.read_text(encoding="utf-8")) or []
-            return value.get("rules", []) if isinstance(value, dict) else value
+            return value.get("rules", value.get("alerts", [])) if isinstance(value, dict) else value
         except FileNotFoundError:
             return []
         except Exception:
@@ -34,11 +34,16 @@ class AlertEngine:
         detections = {str(d.get("label", "")).lower() for d in analysis.get("detections", [])}
         description = str(analysis.get("description", "")).lower()
         triggered, errors = [], []
+        matching, catch_all = [], []
         for rule in self.rules():
-            name = str(rule.get("name", "unnamed"))
-            keywords = {str(k).lower() for k in rule.get("keywords", [])}
-            if not keywords.intersection(detections) and not any(k in description for k in keywords):
+            if rule.get("catch_all"):
+                catch_all.append(rule)
                 continue
+            keywords = {str(k).lower() for k in rule.get("keywords", [])}
+            if keywords.intersection(detections) or any(k in description for k in keywords):
+                matching.append(rule)
+        for rule in matching or catch_all:
+            name = str(rule.get("name", "unnamed"))
             now = time.time()
             if now - self.last_fired.get(name, 0) < cooldown_seconds:
                 continue

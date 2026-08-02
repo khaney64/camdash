@@ -126,11 +126,6 @@ class ThinginoAdapter(CameraAdapter):
         return credentialed(f"rtsp://{self.config.host}/ch{channel}", self.config.username or "thingino", self.config.password)
 
     def ptz(self, command: str, coarse: bool = False) -> None:
-        try:
-            OnvifAdapter(self.config).ptz(command, coarse)
-            return
-        except Exception:
-            pass
         directions = {
             "up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0),
             "up-left": (-1, 1), "up-right": (1, 1), "down-left": (-1, -1), "down-right": (1, -1),

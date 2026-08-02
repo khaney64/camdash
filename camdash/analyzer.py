@@ -118,8 +118,22 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             errors.append(result["error"])
         for detection in result.get("detections", []):
             label = str(detection.get("label", "")).lower()
-            if label and float(detection.get("confidence", 0)) > float(best.get(label, {}).get("confidence", -1)):
-                best[label] = detection
+            if not label:
+                continue
+            current = best.get(label)
+            if current is None:
+                best[label] = dict(detection)
+                continue
+            if float(detection.get("confidence", 0)) > float(current.get("confidence", -1)):
+                replacement = dict(detection)
+                for field in ("name", "reasoning"):
+                    if not replacement.get(field) and current.get(field):
+                        replacement[field] = current[field]
+                best[label] = replacement
+            else:
+                for field in ("name", "reasoning"):
+                    if not current.get(field) and detection.get(field):
+                        current[field] = detection[field]
     return {
         "description": " ".join(descriptions), "detections": list(best.values()),
         "engines": engines, "errors": errors, "images_analyzed": len(results),

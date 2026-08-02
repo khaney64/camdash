@@ -1,0 +1,71 @@
+timezone: America/New_York
+data_dir: ~/.camdash
+
+capture:
+  snapshots: 3
+  snapshot_interval_seconds: 1.0
+  day_video_seconds: 30
+  night_video_seconds: 30
+  day_starts: "07:00"
+  night_starts: "19:00"
+  cooldown_seconds: 5
+
+retention:
+  days: 30
+  max_gb: 50
+  interval_minutes: 60
+
+mqtt:
+  host: mqtt.example.internal
+  port: 1884
+  username: camdash-service
+  password: CHANGE_ME
+  topic: camdash/cameras/+/motion
+  tls: false
+
+analysis:
+  enabled: false
+  backend: llm
+  llm_url: http://llm.example.internal:8080/v1
+  llm_model: vision-model
+  anthropic_model: claude-haiku-4-5-20251001
+  prompt: >-
+    Analyze this security-camera image. Return JSON with keys description and
+    detections, where detections is a list of objects containing label and
+    confidence 0-10.
+  max_tokens: 1024
+  thinking_budget: 2048
+  alerts_enabled: false
+  alert_cooldown_minutes: 30
+
+cameras:
+  - id: patio-camera
+    name: Patio Camera
+    host: 192.0.2.10
+    adapter: thingino
+    enabled: true
+    needs_credentials: false
+    onvif_port: 80
+    username: thingino
+    password: CHANGE_ME
+    token: CHANGE_ME
+    mqtt_topic: camdash/cameras/patio-camera/motion
+    ptz: true
+    sd_redundancy: true
+    prompt_override: ""
+    capture: {}
+  - id: driveway-camera
+    name: Driveway Camera
+    host: 192.0.2.11
+    adapter: onvif
+    enabled: false
+    needs_credentials: true
+    onvif_port: 8000
+    username: ""
+    password: ""
+    mqtt_topic: ""
+    ptz: false
+    sd_redundancy: false
+    prompt_override: ""
+    capture: {}
+

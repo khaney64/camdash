@@ -1,0 +1,19 @@
+[Unit]
+Description=CAM Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<user>
+WorkingDirectory=/home/<user>/camdash
+EnvironmentFile=-/home/<user>/.config/camdash/camdash.env
+ExecStart=/home/<user>/camdash/.venv/bin/python -m uvicorn camdash.main:app --host 0.0.0.0 --port 8081
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+

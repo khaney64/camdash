@@ -1,0 +1,11 @@
+rules:
+  - name: person
+    keywords: [person, human]
+    action: email
+  - name: vehicle
+    keywords: [car, truck, vehicle]
+    action: log
+  - name: wildlife
+    keywords: [deer, fox, coyote, bear]
+    action: email
+

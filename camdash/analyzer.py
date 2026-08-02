@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import requests
+
+from .config import AnalysisConfig
+
+
+LOG = logging.getLogger(__name__)
+
+
+def analyze_image(path: Path, cfg: AnalysisConfig, prompt: str | None = None) -> dict[str, Any]:
+    if not cfg.enabled:
+        return {"description": "", "detections": [], "engine": "disabled"}
+    effective_prompt = prompt or cfg.prompt
+    encoded = base64.b64encode(path.read_bytes()).decode()
+    try:
+        if cfg.backend == "anthropic":
+            return _anthropic(encoded, cfg, effective_prompt)
+        return _local(encoded, cfg, effective_prompt)
+    except Exception as exc:
+        LOG.exception("analysis failed")
+        return {"description": "", "detections": [], "error": str(exc), "engine": cfg.backend}
+
+
+def _local(image: str, cfg: AnalysisConfig, prompt: str) -> dict[str, Any]:
+    if not cfg.llm_url or not cfg.llm_model:
+        raise RuntimeError("local LLM URL or model is not configured")
+    payload: dict[str, Any] = {
+        "model": cfg.llm_model,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image}},
+        ]}],
+        "max_tokens": cfg.max_tokens + max(0, cfg.thinking_budget),
+        "temperature": 0.1,
+    }
+    if cfg.thinking_budget:
+        payload["chat_template_kwargs"] = {"enable_thinking": True, "thinking_budget": cfg.thinking_budget}
+    response = requests.post(cfg.llm_url.rstrip("/") + "/chat/completions", json=payload, timeout=180)
+    response.raise_for_status()
+    text = response.json()["choices"][0]["message"]["content"]
+    return {**parse_result(text), "engine": f"Local ({cfg.llm_model})"}
+
+
+def _anthropic(image: str, cfg: AnalysisConfig, prompt: str) -> dict[str, Any]:
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    payload: dict[str, Any] = {
+        "model": cfg.anthropic_model,
+        "max_tokens": cfg.max_tokens + max(0, cfg.thinking_budget),
+        "messages": [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image}},
+            {"type": "text", "text": prompt},
+        ]}],
+    }
+    if cfg.thinking_budget:
+        payload["thinking"] = {"type": "enabled", "budget_tokens": cfg.thinking_budget}
+    response = requests.post("https://api.anthropic.com/v1/messages", json=payload, headers={
+        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json",
+    }, timeout=180)
+    response.raise_for_status()
+    text = "\n".join(item.get("text", "") for item in response.json().get("content", []) if item.get("type") == "text")
+    return {**parse_result(text), "engine": f"Anthropic ({cfg.anthropic_model})"}
+
+
+def parse_result(text: str) -> dict[str, Any]:
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I | re.S)
+    try:
+        parsed = json.loads(cleaned)
+        detections = parsed.get("detections", [])
+        if not isinstance(detections, list):
+            detections = []
+        normalized = []
+        for item in detections:
+            if isinstance(item, str):
+                normalized.append({"label": item.lower(), "confidence": 5})
+            elif isinstance(item, dict) and item.get("label"):
+                normalized.append({"label": str(item["label"]).lower(), "confidence": float(item.get("confidence", 5))})
+        return {"description": str(parsed.get("description", "")), "detections": normalized, "raw": text}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {"description": text.strip(), "detections": [], "raw": text}
+
+
+def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
+    best: dict[str, dict[str, Any]] = {}
+    descriptions = []
+    engines = []
+    errors = []
+    for result in results:
+        if result.get("description") and result["description"] not in descriptions:
+            descriptions.append(result["description"])
+        if result.get("engine") and result["engine"] not in engines:
+            engines.append(result["engine"])
+        if result.get("error"):
+            errors.append(result["error"])
+        for detection in result.get("detections", []):
+            label = str(detection.get("label", "")).lower()
+            if label and float(detection.get("confidence", 0)) > float(best.get(label, {}).get("confidence", -1)):
+                best[label] = detection
+    return {
+        "description": " ".join(descriptions), "detections": list(best.values()),
+        "engines": engines, "errors": errors, "images_analyzed": len(results),
+    }
+

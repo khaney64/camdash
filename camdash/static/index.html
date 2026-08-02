@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>CAM Dashboard</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">CAM</span><span>Dashboard</span></div>
+    <nav class="desktop-nav" aria-label="Primary"></nav>
+    <div id="service-status" class="status-pill offline">Starting…</div>
+  </header>
+
+  <main>
+    <section id="tab-gallery" class="tab active">
+      <div class="section-head">
+        <div><h1>Gallery</h1><p id="event-count" class="muted">Loading events…</p></div>
+        <button class="button primary" id="refresh-events">Refresh</button>
+      </div>
+      <div class="filters panel">
+        <label>Camera<select id="gallery-camera"><option value="">All cameras</option></select></label>
+        <label>Status<select id="gallery-status"><option value="">Any status</option><option>complete</option><option>capturing</option><option>partial</option><option>failed</option></select></label>
+        <label class="grow">Detection<input id="gallery-query" placeholder="person, deer, vehicle…"></label>
+      </div>
+      <div id="gallery-grid" class="media-grid"></div>
+      <div id="gallery-empty" class="empty hidden">No captured events yet.</div>
+    </section>
+
+    <section id="tab-live" class="tab">
+      <div class="section-head"><div><h1>Live</h1><p class="muted">View and control one camera at a time.</p></div></div>
+      <div class="live-toolbar panel">
+        <label>Camera<select id="live-camera"></select></label>
+        <label class="switch"><input type="checkbox" id="live-hd"><span>HD</span></label>
+        <button class="button primary" id="live-start">Start live</button>
+        <button class="button" id="live-stop">Stop</button>
+        <button class="button" id="manual-snapshot">Snapshot</button>
+        <button class="button" id="manual-clip">30s clip</button>
+      </div>
+      <div class="live-stage panel">
+        <img id="live-mjpeg" class="live-media hidden" alt="Live camera stream">
+        <video id="live-video" class="live-media hidden" controls autoplay muted playsinline></video>
+        <div id="live-placeholder" class="live-placeholder">Select a camera and start live view.</div>
+        <div id="ptz-pad" class="ptz hidden" aria-label="Pan tilt controls">
+          <button data-command="up-left" aria-label="Up left">↖</button><button data-command="up" aria-label="Up">↑</button><button data-command="up-right" aria-label="Up right">↗</button>
+          <button data-command="left" aria-label="Left">←</button><button class="ptz-center" data-command="center" aria-label="Center; double click to home">●</button><button data-command="right" aria-label="Right">→</button>
+          <button data-command="down-left" aria-label="Down left">↙</button><button data-command="down" aria-label="Down">↓</button><button data-command="down-right" aria-label="Down right">↘</button>
+        </div>
+      </div>
+      <p id="live-message" class="message"></p>
+    </section>
+
+    <section id="tab-local" class="tab">
+      <div class="section-head"><div><h1>Local</h1><p class="muted">Saved media is exempt from automatic retention.</p></div></div>
+      <div id="local-grid" class="media-grid"></div>
+      <div id="local-empty" class="empty hidden">No saved media.</div>
+    </section>
+
+    <section id="tab-settings" class="tab">
+      <div class="section-head"><div><h1>Settings</h1><p class="muted">Secrets stay on the server and are never returned to the browser.</p></div><button class="button primary" id="save-settings">Save settings</button></div>
+      <div id="settings-message" class="message"></div>
+      <div class="settings-grid">
+        <form id="capture-settings" class="panel settings-card">
+          <h2>Capture</h2>
+          <div class="field-grid">
+            <label>Snapshots<input name="snapshots" type="number" min="1" max="20"></label>
+            <label>Snapshot interval<input name="snapshot_interval_seconds" type="number" min="0" max="60" step="0.1"></label>
+            <label>Day video seconds<input name="day_video_seconds" type="number" min="1"></label>
+            <label>Night video seconds<input name="night_video_seconds" type="number" min="1"></label>
+            <label>Day starts<input name="day_starts" type="time"></label>
+            <label>Night starts<input name="night_starts" type="time"></label>
+          </div>
+        </form>
+        <form id="retention-settings" class="panel settings-card">
+          <h2>Retention and MQTT</h2>
+          <div class="field-grid">
+            <label>Retention days<input name="days" type="number" min="1"></label>
+            <label>Maximum GB<input name="max_gb" type="number" min="1"></label>
+            <label>MQTT host<input name="mqtt_host"></label>
+            <label>MQTT port<input name="mqtt_port" type="number"></label>
+            <label>MQTT username<input name="mqtt_username" autocomplete="off"></label>
+            <label>MQTT password<input name="mqtt_password" type="password" placeholder="Leave blank to keep" autocomplete="new-password"></label>
+          </div>
+        </form>
+        <form id="analysis-settings" class="panel settings-card wide">
+          <h2>Image analysis</h2>
+          <div class="field-grid">
+            <label class="switch"><input name="enabled" type="checkbox"><span>Enable analysis</span></label>
+            <label>Backend<select name="backend"><option value="llm">Local LLM</option><option value="anthropic">Anthropic</option></select></label>
+            <label>Local LLM URL<input name="llm_url" placeholder="http://llmserver:8080/v1"></label>
+            <label>Local model<input name="llm_model"></label>
+            <label class="switch"><input name="alerts_enabled" type="checkbox"><span>Enable alerts</span></label>
+            <label>Alert cooldown minutes<input name="alert_cooldown_minutes" type="number" min="0"></label>
+            <label class="wide-field">Default prompt<textarea name="prompt" rows="6"></textarea></label>
+          </div>
+          <button type="button" class="button" id="test-alert">Send test email</button>
+        </form>
+      </div>
+      <div class="section-head compact"><h2>Cameras</h2><div><button class="button" id="discover-cameras">Discover ONVIF</button><button class="button" id="add-camera">Add camera</button></div></div>
+      <div id="discovery-results" class="message"></div>
+      <div id="camera-settings"></div>
+    </section>
+
+    <section id="tab-logs" class="tab">
+      <div class="section-head"><div><h1>Logs</h1><p class="muted">The newest 500 redacted entries.</p></div><button class="button" id="refresh-logs">Refresh</button></div>
+      <div id="log-list" class="log-list panel"></div>
+    </section>
+  </main>
+
+  <nav class="mobile-nav" aria-label="Primary"></nav>
+
+  <dialog id="event-dialog">
+    <button class="dialog-close" aria-label="Close">×</button>
+    <div id="event-detail"></div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

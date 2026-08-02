@@ -3,10 +3,13 @@ from camdash.analyzer import aggregate, local_chat_url, parse_result
 
 def test_parse_json_and_aggregate_highest_confidence():
     first = parse_result('{"description":"A deer","detections":[{"label":"Deer","confidence":7}]}')
-    second = parse_result('{"description":"Deer walking","detections":[{"label":"deer","confidence":9},{"label":"fox","confidence":4}]}')
+    second = parse_result('{"description":"Deer walking","detections":[{"label":"deer","name":"Daisy","confidence":9,"reasoning":"Known markings"},{"label":"fox","confidence":4}]}')
     result = aggregate([first, second])
     detections = {item["label"]: item["confidence"] for item in result["detections"]}
     assert detections == {"deer": 9.0, "fox": 4.0}
+    deer = next(item for item in result["detections"] if item["label"] == "deer")
+    assert deer["name"] == "Daisy"
+    assert deer["reasoning"] == "Known markings"
     assert result["images_analyzed"] == 2
 
 

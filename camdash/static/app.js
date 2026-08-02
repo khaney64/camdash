@@ -47,25 +47,40 @@ function renderEvents() {
   $('event-count').textContent=`${S.events.length} event${S.events.length===1?'':'s'}`;
   $('gallery-empty').classList.toggle('hidden',S.events.length>0);
   $('gallery-grid').innerHTML=S.events.map(event=>{
-    const detections=(event.analysis?.detections||[]).slice(0,4).map(d=>`<span class="badge">${esc(d.label)} ${Number(d.confidence||0).toFixed(0)}</span>`).join('');
+    const detections=event.analysis?.detections||[];
     const thumb=event.primary_media_id?`<img class="media-thumb" loading="lazy" src="/api/media/${event.primary_media_id}/thumb" alt="${esc(event.camera_name)} capture">`:'<div class="media-thumb placeholder">No preview</div>';
-    return `<article class="media-card" data-event="${event.id}">${thumb}<div class="card-body"><div class="card-title">${esc(event.camera_name)}</div><div class="card-meta"><span>${formatTime(event.triggered_at)}</span><span>${event.trigger_count>1?'×'+event.trigger_count:''}</span></div><div class="badges"><span class="badge ${esc(event.status)}">${esc(event.status)}</span>${detections}</div></div></article>`;
+    return `<article class="media-card ${analysisClass(detections)}" data-event="${event.id}">${thumb}${detectionOverlay(detections)}<div class="card-body"><div class="card-title">${esc(event.camera_name)}</div><div class="card-meta"><span>${formatTime(event.triggered_at)}</span><span>${event.trigger_count>1?'×'+event.trigger_count:''}</span></div><div class="badges"><span class="badge ${esc(event.status)}">${esc(event.status)}</span></div></div></article>`;
   }).join('');
 }
+const DETECTION_LABELS={raccoon:'🦝 raccoon',bear:'🐻 bear',coyote:'🐺 coyote',person:'🚶 person',human:'🚶 person',legs:'🚶 person',fox:'🦊 fox',deer:'🦌 deer',cat:'🐱 cat',dog:'🐶 dog',squirrel:'🐿 squirrel',rabbit:'🐇 rabbit',bird:'🐦 bird',skunk:'🦨 skunk',turkey:'🦃 turkey',opossum:'🐾 opossum',possum:'🐾 possum',cupcake:'🧁 Cupcake',sox:'🧦 Sox'};
+function detectionParts(detections){
+  const parts=[],seen=new Set();
+  for(const d of detections||[]){
+    const label=String(d.label||'').trim().toLowerCase();
+    if(label&&!seen.has(label)){parts.push({text:DETECTION_LABELS[label]||label,title:d.reasoning||`${label} confidence ${d.confidence??'unknown'}`});seen.add(label);}
+    const name=String(d.name||'').trim(),key=name.toLowerCase();
+    if(name&&key!==label&&!seen.has(key)){parts.push({text:DETECTION_LABELS[key]||`🏷️ ${name}`,title:d.reasoning||`Identified as ${name}`});seen.add(key);}
+  }
+  return parts;
+}
+function detectionOverlay(detections){const parts=detectionParts(detections);return parts.length?`<div class="analysis-overlay">${parts.slice(0,6).map(p=>`<span title="${esc(p.title)}">${esc(p.text)}</span>`).join('<span class="analysis-separator">·</span>')}</div>`:'';}
+function analysisClass(detections){const labels=new Set((detections||[]).map(d=>String(d.label||'').toLowerCase()));if(['raccoon','bear','coyote','skunk'].some(x=>labels.has(x)))return'analysis-wild';if(['person','human','legs'].some(x=>labels.has(x)))return'analysis-person';if(['cat','dog'].some(x=>labels.has(x)))return'analysis-pet';return labels.size?'analysis-animal':'';}
 async function openEvent(id) {
   try {
-    const event=await api('/api/events/'+id); const detections=(event.analysis?.detections||[]).map(d=>`${esc(d.label)} (${Number(d.confidence||0).toFixed(0)}/10)`).join(', ');
-    $('event-detail').innerHTML=`<h2>${esc(event.camera_name)}</h2><p class="muted">${formatTime(event.triggered_at)} · ${esc(event.source)} · ${esc(event.status)}${event.trigger_count>1?' · '+event.trigger_count+' triggers':''}</p>${event.analysis?`<p><strong>${detections||'No detections'}</strong><br>${esc(event.analysis.description||'')}</p>`:''}<div class="detail-media">${event.media.map(media=>detailMedia(media)).join('')}</div><div class="camera-actions"><button class="button danger" data-delete-event="${event.id}">Delete event</button></div>`;
-    $('event-dialog').showModal();
+    const event=await api('/api/events/'+id); const detections=detectionParts(event.analysis?.detections||[]).map(p=>`<span class="detail-detection">${esc(p.text)}</span>`).join('<span class="analysis-separator">·</span>');
+    $('event-detail').dataset.eventId=event.id;
+    $('event-detail').innerHTML=`<h2>${esc(event.camera_name)}</h2><p class="muted">${formatTime(event.triggered_at)} · ${esc(event.source)} · ${esc(event.status)}${event.trigger_count>1?' · '+event.trigger_count+' triggers':''}</p>${event.analysis?`<div class="detail-analysis"><strong>${detections||'No detections'}</strong>${event.analysis.description?`<div>${esc(event.analysis.description)}</div>`:''}</div>`:''}<div class="detail-media">${event.media.map(media=>detailMedia(media)).join('')}</div><div class="camera-actions"><button class="icon-action icon-delete" data-delete-event="${event.id}" title="Delete event" aria-label="Delete event">🗑</button></div>`;
+    if(!$('event-dialog').open)$('event-dialog').showModal();
   } catch(e){ toast(e.message,true); }
 }
 function detailMedia(media) {
   const body=media.path?(media.kind==='video'?`<video controls playsinline src="/api/media/${media.id}/file"></video>`:`<img src="/api/media/${media.id}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
-  return `<div class="detail-item">${body}<div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`<button class="button" data-save-media="${media.id}">Save to Local</button>${media.kind==='snapshot'?`<button class="button" data-analyze-media="${media.id}">Analyze</button><button class="button" data-chat-media="${media.id}">Ask…</button>`:''}`:''}</div></div>`;
+  const overlay=media.kind==='snapshot'?detectionOverlay(media.analysis?.detections||[]):'';
+  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`<button class="icon-action icon-chat" data-chat-media="${media.id}" title="Chat about image" aria-label="Chat about image">💬</button><button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
 }
 
 async function loadSaved() {
-  try { S.saved=(await api('/api/saved')).items; $('local-empty').classList.toggle('hidden',S.saved.length>0); $('local-grid').innerHTML=S.saved.map(item=>`<article class="media-card"><${item.kind==='video'?'video controls playsinline':'img loading="lazy"'} class="media-thumb" src="/api/saved/${item.id}/${item.kind==='video'?'file':'thumb'}"></${item.kind==='video'?'video':'img'}><div class="card-body"><div class="card-title">${esc(item.camera_name)}</div><div class="card-meta"><span>${formatTime(item.saved_at)}</span><button class="button danger" data-delete-saved="${item.id}">Delete</button></div></div></article>`).join(''); }
+  try { S.saved=(await api('/api/saved')).items; $('local-empty').classList.toggle('hidden',S.saved.length>0); $('local-grid').innerHTML=S.saved.map(item=>`<article class="media-card ${analysisClass(item.analysis?.detections||[])}"><${item.kind==='video'?'video controls playsinline':'img loading="lazy"'} class="media-thumb" src="/api/saved/${item.id}/${item.kind==='video'?'file':'thumb'}"></${item.kind==='video'?'video':'img'}>${detectionOverlay(item.analysis?.detections||[])}<div class="card-body"><div class="card-title">${esc(item.camera_name)}</div><div class="card-meta"><span>${formatTime(item.saved_at)}</span><button class="icon-action icon-delete" data-delete-saved="${item.id}" title="Delete saved item" aria-label="Delete saved item">🗑</button></div></div></article>`).join(''); }
   catch(e){toast(e.message,true)}
 }
 
@@ -128,7 +143,7 @@ async function loadLogs(){try{const entries=(await api('/api/logs')).entries;$('
 function bind() {
   $('refresh-events').onclick=loadEvents; $('gallery-camera').onchange=loadEvents;$('gallery-status').onchange=loadEvents;$('gallery-query').oninput=debounce(loadEvents,350);
   $('gallery-grid').onclick=e=>{const card=e.target.closest('[data-event]');if(card)openEvent(card.dataset.event)};
-  $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close(); $('event-dialog').addEventListener('click',async e=>{const save=e.target.closest('[data-save-media]');if(save){try{await api(`/api/media/${save.dataset.saveMedia}/save`,{method:'POST'});toast('Saved to Local');}catch(err){toast(err.message,true)}}const analyze=e.target.closest('[data-analyze-media]');if(analyze){try{await api(`/api/media/${analyze.dataset.analyzeMedia}/analyze`,{method:'POST'});toast('Analysis complete');}catch(err){toast(err.message,true)}}const chat=e.target.closest('[data-chat-media]');if(chat){const promptText=prompt('Ask about this image:');if(promptText){try{const result=await api(`/api/media/${chat.dataset.chatMedia}/chat`,{method:'POST',body:JSON.stringify({prompt:promptText})});alert(result.description||result.raw||'No response');}catch(err){toast(err.message,true)}}}const del=e.target.closest('[data-delete-event]');if(del&&confirm('Delete this event from the server? SD copies are not affected.')){await api('/api/events/'+del.dataset.deleteEvent,{method:'DELETE'});$('event-dialog').close();loadEvents();}});
+  $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close(); $('event-dialog').addEventListener('click',async e=>{const save=e.target.closest('[data-save-media]');if(save){try{await api(`/api/media/${save.dataset.saveMedia}/save`,{method:'POST'});toast('Saved to Local');}catch(err){toast(err.message,true)}}const analyze=e.target.closest('[data-analyze-media]');if(analyze){try{await api(`/api/media/${analyze.dataset.analyzeMedia}/analyze`,{method:'POST'});toast('Analysis complete');const eventId=$('event-detail').dataset.eventId;if(eventId)await openEvent(eventId);}catch(err){toast(err.message,true)}}const chat=e.target.closest('[data-chat-media]');if(chat){const promptText=prompt('Ask about this image:');if(promptText){try{const result=await api(`/api/media/${chat.dataset.chatMedia}/chat`,{method:'POST',body:JSON.stringify({prompt:promptText})});alert(result.description||result.raw||'No response');}catch(err){toast(err.message,true)}}}const del=e.target.closest('[data-delete-event]');if(del&&confirm('Delete this event from the server? SD copies are not affected.')){await api('/api/events/'+del.dataset.deleteEvent,{method:'DELETE'});$('event-dialog').close();loadEvents();}});
   $('local-grid').onclick=async e=>{const b=e.target.closest('[data-delete-saved]');if(b&&confirm('Delete this saved item?')){await api('/api/saved/'+b.dataset.deleteSaved,{method:'DELETE'});loadSaved();}};
   $('live-start').onclick=toggleLive;$('manual-snapshot').onclick=()=>manualCapture('snapshot');$('manual-clip').onclick=()=>manualCapture('clip');$('copy-rtsp').onclick=copyRtspUrl;$('live-camera').onchange=liveSelectionChanged;$('live-hd').onchange=liveSelectionChanged;
   $('live-stage').onclick=e=>{if(!S.liveCamera||!S.livePtz||!e.target.closest('.live-media'))return;$('ptz-pad').classList.toggle('hidden');};

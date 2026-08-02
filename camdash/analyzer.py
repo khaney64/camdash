@@ -93,7 +93,12 @@ def parse_result(text: str) -> dict[str, Any]:
             if isinstance(item, str):
                 normalized.append({"label": item.lower(), "confidence": 5})
             elif isinstance(item, dict) and item.get("label"):
-                normalized.append({"label": str(item["label"]).lower(), "confidence": float(item.get("confidence", 5))})
+                detection = {"label": str(item["label"]).lower(), "confidence": float(item.get("confidence", 5))}
+                if item.get("name"):
+                    detection["name"] = str(item["name"])
+                if item.get("reasoning"):
+                    detection["reasoning"] = str(item["reasoning"])
+                normalized.append(detection)
         return {"description": str(parsed.get("description", "")), "detections": normalized, "raw": text}
     except (json.JSONDecodeError, TypeError, ValueError):
         return {"description": text.strip(), "detections": [], "raw": text}

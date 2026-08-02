@@ -187,6 +187,9 @@ class CaptureManager:
             await self.broadcast({"type": "analysis_update", "event_id": event["id"], "media_id": media["id"], "analysis": result})
         aggregate = analyzer.aggregate(results)
         self.db.update_event(event["id"], analysis_json=aggregate)
+        failures = [str(result["error"]) for result in results if result.get("error")]
+        if results and len(failures) == len(results):
+            raise RuntimeError(f"all {len(results)} image analyses failed: {failures[0]}")
         event_with_analysis = self.db.get_event(event["id"]) or event
         if cfg.analysis.alerts_enabled:
             first = next((Path(m["thumb_path"]) for m in snapshots if m.get("thumb_path")), None)

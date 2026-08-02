@@ -16,6 +16,15 @@ from .config import AnalysisConfig
 LOG = logging.getLogger(__name__)
 
 
+def local_chat_url(base_url: str) -> str:
+    value = base_url.rstrip("/")
+    if value.endswith("/chat/completions"):
+        return value
+    if value.endswith("/v1"):
+        return value + "/chat/completions"
+    return value + "/v1/chat/completions"
+
+
 def analyze_image(path: Path, cfg: AnalysisConfig, prompt: str | None = None) -> dict[str, Any]:
     if not cfg.enabled:
         return {"description": "", "detections": [], "engine": "disabled"}
@@ -44,7 +53,7 @@ def _local(image: str, cfg: AnalysisConfig, prompt: str) -> dict[str, Any]:
     }
     if cfg.thinking_budget:
         payload["chat_template_kwargs"] = {"enable_thinking": True, "thinking_budget": cfg.thinking_budget}
-    response = requests.post(cfg.llm_url.rstrip("/") + "/chat/completions", json=payload, timeout=180)
+    response = requests.post(local_chat_url(cfg.llm_url), json=payload, timeout=180)
     response.raise_for_status()
     text = response.json()["choices"][0]["message"]["content"]
     return {**parse_result(text), "engine": f"Local ({cfg.llm_model})"}
@@ -110,4 +119,3 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
         "description": " ".join(descriptions), "detections": list(best.values()),
         "engines": engines, "errors": errors, "images_analyzed": len(results),
     }
-

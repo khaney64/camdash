@@ -1,4 +1,4 @@
-from camdash.analyzer import aggregate, parse_result
+from camdash.analyzer import aggregate, local_chat_url, parse_result
 
 
 def test_parse_json_and_aggregate_highest_confidence():
@@ -15,3 +15,8 @@ def test_free_text_is_preserved():
     assert result["description"] == "Nothing visible"
     assert result["detections"] == []
 
+
+def test_local_chat_url_accepts_server_v1_or_full_endpoint():
+    assert local_chat_url("http://llm:8080") == "http://llm:8080/v1/chat/completions"
+    assert local_chat_url("http://llm:8080/v1/") == "http://llm:8080/v1/chat/completions"
+    assert local_chat_url("http://llm:8080/v1/chat/completions") == "http://llm:8080/v1/chat/completions"

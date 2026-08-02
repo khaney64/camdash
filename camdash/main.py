@@ -280,13 +280,18 @@ async def ptz(camera_id: str, payload: PtzRequest):
 
 
 @app.get("/api/cameras/{camera_id}/live/info")
-async def live_info(camera_id: str):
+async def live_info(camera_id: str, hd: bool = False):
     try:
         camera = state().config.camera(camera_id)
+        adapter = adapter_for(camera)
+        rtsp_url = await asyncio.to_thread(adapter.rtsp_url, hd)
         return {"camera_id": camera_id, "mjpeg": camera.adapter == "thingino", "ptz": camera.ptz,
-                "mjpeg_url": f"/api/cameras/{camera_id}/live.mjpg", "hls": f"/api/cameras/{camera_id}/hls/index.m3u8"}
+                "mjpeg_url": f"/api/cameras/{camera_id}/live.mjpg", "hls": f"/api/cameras/{camera_id}/hls/index.m3u8",
+                "rtsp_url": rtsp_url}
     except KeyError as exc:
         raise HTTPException(404, "camera not found") from exc
+    except CameraError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.get("/api/cameras/{camera_id}/live.mjpg")

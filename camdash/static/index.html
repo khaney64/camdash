@@ -34,14 +34,21 @@
     <section id="tab-live" class="tab">
       <div class="section-head"><div><h1>Live</h1><p class="muted">View and control one camera at a time.</p></div></div>
       <div class="live-toolbar panel">
-        <label>Camera<select id="live-camera"></select></label>
-        <label class="switch"><input type="checkbox" id="live-hd"><span>HD</span></label>
-        <button class="button primary" id="live-start">Start live</button>
-        <button class="button" id="live-stop">Stop</button>
-        <button class="button" id="manual-snapshot">Snapshot</button>
-        <button class="button" id="manual-clip">30s clip</button>
+        <div class="live-toolbar-row">
+          <label>Camera<select id="live-camera"></select></label>
+          <label class="switch"><input type="checkbox" id="live-hd"><span>HD</span></label>
+        </div>
+        <div class="rtsp-copy-row">
+          <label class="grow">RTSP URL (includes credentials)<input id="live-rtsp" type="text" readonly spellcheck="false" aria-label="Selected camera RTSP URL"></label>
+          <button class="button" id="copy-rtsp" type="button">Copy</button>
+        </div>
+        <div class="live-toolbar-row">
+          <button class="button primary" id="live-start">Start live</button>
+          <button class="button" id="manual-snapshot">Snapshot</button>
+          <button class="button" id="manual-clip">30s clip</button>
+        </div>
       </div>
-      <div class="live-stage panel">
+      <div id="live-stage" class="live-stage panel">
         <img id="live-mjpeg" class="live-media hidden" alt="Live camera stream">
         <video id="live-video" class="live-media hidden" controls autoplay muted playsinline></video>
         <div id="live-placeholder" class="live-placeholder">Select a camera and start live view.</div>

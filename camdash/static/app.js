@@ -1,7 +1,7 @@
 const TABS = [
   ['gallery','Gallery','▦'], ['live','Live','●'], ['local','Local','★'], ['settings','Settings','⚙'], ['logs','Logs','≡']
 ];
-const S = {tab:'gallery',settings:null,cameras:[],events:[],saved:[],liveCamera:null,hls:null,evt:null};
+const S = {tab:'gallery',settings:null,cameras:[],events:[],saved:[],liveCamera:null,livePtz:false,hls:null,evt:null};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
@@ -36,6 +36,7 @@ async function loadCameras() {
   const options=S.cameras.filter(c=>c.enabled).map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
   $('live-camera').innerHTML=options||'<option>No enabled cameras</option>';
   $('gallery-camera').innerHTML='<option value="">All cameras</option>'+S.cameras.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  await updateRtspUrl();
 }
 async function loadEvents() {
   const params=new URLSearchParams(); const camera=$('gallery-camera').value,status=$('gallery-status').value,q=$('gallery-query').value.trim();
@@ -68,17 +69,30 @@ async function loadSaved() {
   catch(e){toast(e.message,true)}
 }
 
+async function updateRtspUrl() {
+  const cameraId=$('live-camera').value,input=$('live-rtsp');
+  if(!cameraId){input.value='';return;}
+  try{const info=await api(`/api/cameras/${cameraId}/live/info?hd=${$('live-hd').checked}`);input.value=info.rtsp_url||'';}
+  catch(e){input.value='';toast(e.message,true)}
+}
+async function copyRtspUrl() {
+  const input=$('live-rtsp');if(!input.value)return;
+  try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(input.value);else{input.focus();input.select();if(!document.execCommand('copy'))throw new Error('Copy failed');}toast('RTSP URL copied');}
+  catch{toast('Could not copy automatically; select the URL and copy it manually.',true)}
+}
+async function liveSelectionChanged(){if(S.liveCamera)await stopLive();await updateRtspUrl();}
 async function startLive() {
-  await stopLive(); const cameraId=$('live-camera').value;if(!cameraId)return;S.liveCamera=cameraId;
-  try { const info=await api(`/api/cameras/${cameraId}/live/info`); $('live-placeholder').classList.add('hidden'); $('ptz-pad').classList.toggle('hidden',!info.ptz);
+  await stopLive(); const cameraId=$('live-camera').value;if(!cameraId)return;
+  try { const info=await api(`/api/cameras/${cameraId}/live/info?hd=${$('live-hd').checked}`); S.liveCamera=cameraId;S.livePtz=info.ptz;$('live-rtsp').value=info.rtsp_url||''; $('live-placeholder').classList.add('hidden'); $('ptz-pad').classList.add('hidden');
     if(info.mjpeg){$('live-mjpeg').src=info.mjpeg_url+($('live-hd').checked?'?hd=true':'');$('live-mjpeg').classList.remove('hidden');}
     else { const result=await api(`/api/cameras/${cameraId}/hls/start?hd=${$('live-hd').checked}`,{method:'POST'}); const video=$('live-video');video.classList.remove('hidden'); if(window.Hls?.isSupported()){S.hls=new Hls({liveSyncDurationCount:2,maxLiveSyncPlaybackRate:1.5});S.hls.loadSource(result.playlist);S.hls.attachMedia(video);}else{video.src=result.playlist;} }
-    $('live-message').textContent='Live view active.';
-  } catch(e){$('live-message').textContent=e.message;$('live-message').className='message error';toast(e.message,true)}
+    $('live-start').textContent='Stop live';$('live-start').classList.remove('primary');$('live-message').textContent='Live view active. Click the preview for direction controls.';$('live-message').className='message';
+  } catch(e){S.liveCamera=null;S.livePtz=false;$('live-start').textContent='Start live';$('live-start').classList.add('primary');$('live-message').textContent=e.message;$('live-message').className='message error';toast(e.message,true)}
 }
 async function stopLive() {
-  const id=S.liveCamera; $('live-mjpeg').src=''; $('live-mjpeg').classList.add('hidden'); const video=$('live-video');video.pause();video.removeAttribute('src');video.load();video.classList.add('hidden');if(S.hls){S.hls.destroy();S.hls=null;}if(id){try{await api(`/api/cameras/${id}/hls/stop`,{method:'POST'})}catch{}}S.liveCamera=null;$('ptz-pad').classList.add('hidden');$('live-placeholder').classList.remove('hidden');
+  const id=S.liveCamera; $('live-mjpeg').src=''; $('live-mjpeg').classList.add('hidden'); const video=$('live-video');video.pause();video.removeAttribute('src');video.load();video.classList.add('hidden');if(S.hls){S.hls.destroy();S.hls=null;}if(id){try{await api(`/api/cameras/${id}/hls/stop`,{method:'POST'})}catch{}}S.liveCamera=null;S.livePtz=false;$('ptz-pad').classList.add('hidden');$('live-placeholder').classList.remove('hidden');$('live-start').textContent='Start live';$('live-start').classList.add('primary');
 }
+async function toggleLive(){if(S.liveCamera)await stopLive();else await startLive();}
 async function ptz(command,coarse=false){if(!S.liveCamera)return;try{await api(`/api/cameras/${S.liveCamera}/ptz`,{method:'POST',body:JSON.stringify({command,coarse})});}catch(e){toast(e.message,true)}}
 async function manualCapture(kind){const id=$('live-camera').value;if(!id)return;try{await api(`/api/cameras/${id}/capture/${kind}`,{method:'POST'});toast(kind==='clip'?'Recording started':'Snapshot started');}catch(e){toast(e.message,true)}}
 
@@ -116,7 +130,9 @@ function bind() {
   $('gallery-grid').onclick=e=>{const card=e.target.closest('[data-event]');if(card)openEvent(card.dataset.event)};
   $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close(); $('event-dialog').addEventListener('click',async e=>{const save=e.target.closest('[data-save-media]');if(save){try{await api(`/api/media/${save.dataset.saveMedia}/save`,{method:'POST'});toast('Saved to Local');}catch(err){toast(err.message,true)}}const analyze=e.target.closest('[data-analyze-media]');if(analyze){try{await api(`/api/media/${analyze.dataset.analyzeMedia}/analyze`,{method:'POST'});toast('Analysis complete');}catch(err){toast(err.message,true)}}const chat=e.target.closest('[data-chat-media]');if(chat){const promptText=prompt('Ask about this image:');if(promptText){try{const result=await api(`/api/media/${chat.dataset.chatMedia}/chat`,{method:'POST',body:JSON.stringify({prompt:promptText})});alert(result.description||result.raw||'No response');}catch(err){toast(err.message,true)}}}const del=e.target.closest('[data-delete-event]');if(del&&confirm('Delete this event from the server? SD copies are not affected.')){await api('/api/events/'+del.dataset.deleteEvent,{method:'DELETE'});$('event-dialog').close();loadEvents();}});
   $('local-grid').onclick=async e=>{const b=e.target.closest('[data-delete-saved]');if(b&&confirm('Delete this saved item?')){await api('/api/saved/'+b.dataset.deleteSaved,{method:'DELETE'});loadSaved();}};
-  $('live-start').onclick=startLive;$('live-stop').onclick=stopLive;$('manual-snapshot').onclick=()=>manualCapture('snapshot');$('manual-clip').onclick=()=>manualCapture('clip');
+  $('live-start').onclick=toggleLive;$('manual-snapshot').onclick=()=>manualCapture('snapshot');$('manual-clip').onclick=()=>manualCapture('clip');$('copy-rtsp').onclick=copyRtspUrl;$('live-camera').onchange=liveSelectionChanged;$('live-hd').onchange=liveSelectionChanged;
+  $('live-stage').onclick=e=>{if(!S.liveCamera||!S.livePtz||!e.target.closest('.live-media'))return;$('ptz-pad').classList.toggle('hidden');};
+  document.addEventListener('click',e=>{if(!e.target.closest('#ptz-pad')&&!e.target.closest('.live-media'))$('ptz-pad').classList.add('hidden');});
   let clickTimer;document.querySelectorAll('#ptz-pad button').forEach(b=>{b.onclick=e=>{if(e.detail===1)clickTimer=setTimeout(()=>ptz(b.dataset.command,false),210)};b.ondblclick=()=>{clearTimeout(clickTimer);ptz(b.classList.contains('ptz-center')?'home':b.dataset.command,true)}});
   $('save-settings').onclick=saveSettings;$('discover-cameras').onclick=discoverCameras;$('add-camera').onclick=addCamera;$('test-alert').onclick=async()=>{try{await api('/api/alerts/test',{method:'POST'});toast('Test email sent')}catch(e){toast(e.message,true)}};
   $('camera-settings').onclick=e=>{const remove=e.target.closest('[data-remove-camera]');if(remove){S.cameras.splice(Number(remove.dataset.removeCamera),1);renderCameraSettings();return}const probe=e.target.closest('[data-probe-camera]');if(probe)probeCamera(probe.dataset.probeCamera);const sd=e.target.closest('[data-sd-camera]');if(sd)checkSd(sd.dataset.sdCamera);};

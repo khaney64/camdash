@@ -441,6 +441,19 @@ async def analyze_media(media_id: str):
         raise HTTPException(404, "camera no longer configured") from exc
 
 
+@app.get("/api/media/{media_id}/chat")
+async def chat_media_prompt(media_id: str):
+    s = state()
+    media = s.db.get_media(media_id)
+    if not media or media.get("kind") != "snapshot" or not media.get("path"):
+        raise HTTPException(404, "snapshot not found")
+    try:
+        camera = s.config.camera(media["camera_id"])
+    except KeyError as exc:
+        raise HTTPException(404, "camera no longer configured") from exc
+    return {"prompt": camera.prompt_override.strip() or s.config.analysis.prompt}
+
+
 @app.post("/api/media/{media_id}/chat")
 async def chat_media(media_id: str, payload: dict[str, Any] = Body(...)):
     media = state().db.get_media(media_id)
@@ -449,7 +462,9 @@ async def chat_media(media_id: str, payload: dict[str, Any] = Body(...)):
         raise HTTPException(404, "snapshot not found")
     if not prompt or len(prompt) > 4000:
         raise HTTPException(422, "prompt must contain 1-4000 characters")
-    result = await asyncio.to_thread(analyzer.analyze_image, Path(media["path"]), state().config.analysis, prompt)
+    result = await asyncio.to_thread(
+        analyzer.analyze_image, Path(media["path"]), state().config.analysis, analyzer.with_reasoning(prompt)
+    )
     return result
 
 

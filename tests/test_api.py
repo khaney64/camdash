@@ -67,3 +67,40 @@ def test_live_info_returns_selected_rtsp_profile(tmp_path: Path, monkeypatch):
         main = client.get("/api/cameras/cam/live/info?hd=true").json()
         assert sub["rtsp_url"] == "rtsp://viewer:p%40ss%20word@192.0.2.20/ch1"
         assert main["rtsp_url"] == "rtsp://viewer:p%40ss%20word@192.0.2.20/ch0"
+
+
+def test_chat_uses_camera_prompt_and_appends_reasoning(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
+        id="cam", name="Camera", host="192.0.2.20", prompt_override="Camera-specific prompt",
+    )])
+    cfg.mqtt.host = "127.0.0.1"
+    cfg.mqtt.port = 9
+    cfg.analysis.enabled = True
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.main import app, state
+
+    image = tmp_path / "capture.jpg"
+    image.write_bytes(b"image")
+    with TestClient(app) as client:
+        database = state().db
+        database.create_event({
+            "id": "event", "camera_id": "cam", "camera_name": "Camera", "source": "test",
+            "triggered_at": "2026-08-03T00:00:00Z", "received_at": "2026-08-03T00:00:00Z",
+            "profile": "day", "status": "complete", "created_at": "2026-08-03T00:00:00Z",
+        })
+        database.add_media({
+            "id": "media", "event_id": "event", "kind": "snapshot", "captured_at": "2026-08-03T00:00:00Z",
+            "path": str(image), "mime_type": "image/jpeg",
+        })
+        assert client.get("/api/media/media/chat").json()["prompt"] == "Camera-specific prompt"
+
+        captured = {}
+        monkeypatch.setattr("camdash.main.analyzer.analyze_image", lambda path, config, prompt: (
+            captured.update(prompt=prompt) or {"description": "Answer", "detections": []}
+        ))
+        response = client.post("/api/media/media/chat", json={"prompt": "What is visible?"})
+        assert response.status_code == 200
+        assert captured["prompt"] == "What is visible?\nInclude your reasoning."

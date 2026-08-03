@@ -16,6 +16,10 @@ from .config import AnalysisConfig
 LOG = logging.getLogger(__name__)
 
 
+def with_reasoning(prompt: str) -> str:
+    return prompt.rstrip() + "\nInclude your reasoning."
+
+
 def local_chat_url(base_url: str) -> str:
     value = base_url.rstrip("/")
     if value.endswith("/chat/completions"):

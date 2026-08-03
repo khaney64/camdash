@@ -133,6 +133,23 @@
     <div id="event-detail"></div>
   </dialog>
 
+  <dialog id="chat-dialog" class="chat-dialog" aria-labelledby="chat-dialog-title">
+    <div class="chat-dialog-card">
+      <div class="chat-dialog-header">
+        <h3 id="chat-dialog-title">Chat about image</h3>
+        <button type="button" class="chat-close-btn" aria-label="Close chat">✕</button>
+      </div>
+      <div class="chat-dialog-body">
+        <textarea id="chat-prompt-input" class="chat-prompt-input" rows="6" placeholder="Enter your question about this image…"></textarea>
+        <div class="chat-dialog-actions">
+          <span id="chat-status" class="muted" role="status"></span>
+          <button type="button" id="chat-submit-btn" class="button primary">Ask</button>
+        </div>
+        <div id="chat-response" class="chat-response hidden" aria-live="polite"></div>
+      </div>
+    </div>
+  </dialog>
+
   <div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

@@ -1,7 +1,7 @@
 const TABS = [
   ['gallery','Gallery','▦'], ['live','Live','●'], ['local','Local','★'], ['settings','Settings','⚙'], ['logs','Logs','≡']
 ];
-const S = {tab:'gallery',settings:null,cameras:[],events:[],saved:[],liveCamera:null,livePtz:false,hls:null,evt:null};
+const S = {tab:'gallery',settings:null,cameras:[],events:[],saved:[],liveCamera:null,livePtz:false,hls:null,evt:null,chatMedia:null};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
@@ -155,10 +155,32 @@ async function probeCamera(id){const out=document.querySelector(`[data-camera-re
 async function checkSd(id){const out=document.querySelector(`[data-camera-result="${CSS.escape(id)}"]`);out.textContent='Checking SD…';try{const data=await api(`/api/cameras/${id}/sd`);out.textContent=data.supported?(data.mounted===false?'SD not mounted':'SD reachable'):'Not supported';}catch(e){out.textContent=e.message;}}
 async function loadLogs(){try{const entries=(await api('/api/logs')).entries;$('log-list').innerHTML=entries.slice().reverse().map(x=>`<div class="log-entry"><time>${formatTime(x.time)}</time><span class="${esc(x.level)}">${esc(x.level)}</span><span>${esc(x.message)}</span></div>`).join('')||'<div class="empty">No log entries.</div>';}catch(e){toast(e.message,true)}}
 
+async function openChatDialog(mediaId){
+  S.chatMedia=mediaId;$('chat-prompt-input').value='';$('chat-status').textContent='Loading prompt…';$('chat-response').textContent='';$('chat-response').classList.add('hidden');if(!$('chat-dialog').open)$('chat-dialog').showModal();
+  try{const data=await api(`/api/media/${mediaId}/chat`);if(S.chatMedia!==mediaId)return;$('chat-prompt-input').value=data.prompt||'';$('chat-status').textContent='';$('chat-prompt-input').focus();}
+  catch(e){$('chat-status').textContent=e.message;}
+}
+function closeChatDialog(){if($('chat-dialog').open)$('chat-dialog').close();S.chatMedia=null;}
+async function submitChat(){
+  const promptText=$('chat-prompt-input').value.trim();if(!promptText||!S.chatMedia)return;
+  const submit=$('chat-submit-btn'),response=$('chat-response');submit.disabled=true;$('chat-status').textContent='Thinking…';response.classList.add('hidden');
+  try{const result=await api(`/api/media/${S.chatMedia}/chat`,{method:'POST',body:JSON.stringify({prompt:promptText})});$('chat-status').textContent='';
+    if(result.detections?.length){response.innerHTML=result.detections.map(det=>{const name=det.name?` — ${esc(det.name)}`:'';const confidence=det.confidence!=null?` [${esc(det.confidence)}]`:'';const reasoning=det.reasoning?`<div class="chat-reasoning">${esc(det.reasoning)}</div>`:'';return `<div class="chat-detection"><strong>${esc(String(det.label||'').toLowerCase())}${name}</strong>${confidence}${reasoning}</div>`}).join('');}
+    else response.textContent=result.description||result.raw||'(no response)';response.classList.remove('hidden');
+  }catch(e){$('chat-status').textContent='';response.textContent=`Error: ${e.message}`;response.classList.remove('hidden');}
+  finally{submit.disabled=false;}
+}
+
 function bind() {
   $('refresh-events').onclick=loadEvents; $('gallery-camera').onchange=loadEvents;$('gallery-status').onchange=loadEvents;$('gallery-query').oninput=debounce(loadEvents,350);
   $('gallery-grid').onclick=e=>{const card=e.target.closest('[data-event]');if(card)openEvent(card.dataset.event)};
-  $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close(); $('event-dialog').addEventListener('click',async e=>{const save=e.target.closest('[data-save-media]');if(save){try{await api(`/api/media/${save.dataset.saveMedia}/save`,{method:'POST'});toast('Saved to Local');}catch(err){toast(err.message,true)}}const analyze=e.target.closest('[data-analyze-media]');if(analyze){try{await api(`/api/media/${analyze.dataset.analyzeMedia}/analyze`,{method:'POST'});toast('Analysis complete');const eventId=$('event-detail').dataset.eventId;if(eventId)await openEvent(eventId);}catch(err){toast(err.message,true)}}const chat=e.target.closest('[data-chat-media]');if(chat){const promptText=prompt('Ask about this image:');if(promptText){try{const result=await api(`/api/media/${chat.dataset.chatMedia}/chat`,{method:'POST',body:JSON.stringify({prompt:promptText})});alert(result.description||result.raw||'No response');}catch(err){toast(err.message,true)}}}const del=e.target.closest('[data-delete-event]');if(del&&confirm('Delete this event from the server? SD copies are not affected.')){await api('/api/events/'+del.dataset.deleteEvent,{method:'DELETE'});$('event-dialog').close();loadEvents();}});
+  $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close();
+  $('event-dialog').addEventListener('click',async e=>{
+    const save=e.target.closest('[data-save-media]');if(save){try{await api(`/api/media/${save.dataset.saveMedia}/save`,{method:'POST'});toast('Saved to Local');}catch(err){toast(err.message,true)}}
+    const analyze=e.target.closest('[data-analyze-media]');if(analyze){try{await api(`/api/media/${analyze.dataset.analyzeMedia}/analyze`,{method:'POST'});toast('Analysis complete');const eventId=$('event-detail').dataset.eventId;if(eventId)await openEvent(eventId);}catch(err){toast(err.message,true)}}
+    const chat=e.target.closest('[data-chat-media]');if(chat)openChatDialog(chat.dataset.chatMedia);
+    const del=e.target.closest('[data-delete-event]');if(del&&confirm('Delete this event from the server? SD copies are not affected.')){await api('/api/events/'+del.dataset.deleteEvent,{method:'DELETE'});$('event-dialog').close();loadEvents();}
+  });
   $('local-grid').onclick=async e=>{const b=e.target.closest('[data-delete-saved]');if(b&&confirm('Delete this saved item?')){await api('/api/saved/'+b.dataset.deleteSaved,{method:'DELETE'});loadSaved();}};
   $('live-start').onclick=toggleLive;$('manual-snapshot').onclick=()=>manualCapture('snapshot');$('manual-clip').onclick=()=>manualCapture('clip');$('copy-rtsp').onclick=copyRtspUrl;$('live-camera').onchange=liveSelectionChanged;$('live-hd').onchange=liveSelectionChanged;
   $('live-stage').onclick=e=>{if(!S.liveCamera||!S.livePtz||!e.target.closest('.live-media'))return;$('ptz-pad').classList.toggle('hidden');};
@@ -167,6 +189,8 @@ function bind() {
   $('save-settings').onclick=saveSettings;$('save-alerts').onclick=saveSettings;$('discover-cameras').onclick=discoverCameras;$('add-camera').onclick=addCamera;$('test-alert').onclick=async()=>{const status=$('test-alert-status');status.textContent='Sending…';try{await api('/api/alerts/test',{method:'POST'});status.textContent='Test email sent';toast('Test email sent')}catch(e){status.textContent=e.message;toast(e.message,true)}};
   $('camera-settings').onclick=e=>{const remove=e.target.closest('[data-remove-camera]');if(remove){S.cameras.splice(Number(remove.dataset.removeCamera),1);renderCameraSettings();return}const probe=e.target.closest('[data-probe-camera]');if(probe)probeCamera(probe.dataset.probeCamera);const sd=e.target.closest('[data-sd-camera]');if(sd)checkSd(sd.dataset.sdCamera);};
   $('refresh-logs').onclick=loadLogs;
+  $('chat-dialog').onclick=e=>{if(e.target===$('chat-dialog'))closeChatDialog()};$('chat-dialog').querySelector('.chat-close-btn').onclick=closeChatDialog;$('chat-submit-btn').onclick=submitChat;$('chat-prompt-input').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')submitChat()};
+  $('chat-dialog').addEventListener('close',()=>{S.chatMedia=null});
 }
 function debounce(fn,ms){let t;return()=>{clearTimeout(t);t=setTimeout(fn,ms)}}
 function connectEvents(){if(S.evt)S.evt.close();S.evt=new EventSource('/api/updates');S.evt.onmessage=e=>{const data=JSON.parse(e.data);if(data.type.startsWith('event_')||data.type==='capture_progress'||data.type==='analysis_update'){if(S.tab==='gallery')loadEvents();}if(data.type==='saved'&&S.tab==='local')loadSaved();};S.evt.onerror=()=>setTimeout(connectEvents,3000);}

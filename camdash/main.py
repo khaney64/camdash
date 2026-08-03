@@ -69,7 +69,9 @@ class AppState:
             logging.getLogger().addHandler(file_handler)
         self.db = Database(self.config.root / "camdash.db")
         self.listeners: set[asyncio.Queue] = set()
-        self.capture = CaptureManager(self.db, lambda: self.config, self.broadcast)
+        self.capture = CaptureManager(
+            self.db, lambda: self.config, self.broadcast, self.config_path.parent / "alerts.yaml"
+        )
         self.mqtt = MqttSource(lambda: self.config, self.capture.trigger)
         self.onvif = OnvifEventSource(lambda: self.config, self.capture.trigger)
         self.retention_task: asyncio.Task | None = None
@@ -210,11 +212,11 @@ async def updates(request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
-def settings_payload(config: AppConfig) -> dict[str, Any]:
+def settings_payload(config: AppConfig, config_path: Path) -> dict[str, Any]:
     payload = public_config(config)
     email = os.environ.get("CAMDASH_ALERT_EMAIL", "")
     password = os.environ.get("CAMDASH_ALERT_SMTP_PASSWORD", "")
-    rules = AlertEngine(config.root / "alerts.yaml").rules()
+    rules = AlertEngine(config_path.parent / "alerts.yaml").rules()
     payload["analysis"].update({
         "alert_email": email,
         "alert_email_configured": bool(email and password),
@@ -225,7 +227,8 @@ def settings_payload(config: AppConfig) -> dict[str, Any]:
 
 @app.get("/api/settings")
 async def get_settings():
-    return settings_payload(state().config)
+    s = state()
+    return settings_payload(s.config, s.config_path)
 
 
 @app.put("/api/settings")
@@ -235,10 +238,10 @@ async def put_settings(payload: dict[str, Any] = Body(...)):
         updated = merge_public_update(s.config, payload)
         save_config(updated, s.config_path)
         s.config = updated
-        s.capture.alerts = AlertEngine(updated.root / "alerts.yaml")
+        s.capture.alerts = AlertEngine(s.config_path.parent / "alerts.yaml")
         await s.restart_sources()
         await s.broadcast({"type": "settings_update"})
-        return settings_payload(updated)
+        return settings_payload(updated, s.config_path)
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
 

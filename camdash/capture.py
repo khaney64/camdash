@@ -25,13 +25,14 @@ Broadcast = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class CaptureManager:
-    def __init__(self, db: Database, config_getter: Callable[[], AppConfig], broadcast: Broadcast):
+    def __init__(self, db: Database, config_getter: Callable[[], AppConfig], broadcast: Broadcast,
+                 alerts_path: Path | None = None):
         self.db = db
         self.config_getter = config_getter
         self.broadcast = broadcast
         self.inflight: dict[str, tuple[str, asyncio.Task]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-        self.alerts = AlertEngine(self.config_getter().root / "alerts.yaml")
+        self.alerts = AlertEngine(alerts_path or self.config_getter().root / "alerts.yaml")
 
     async def trigger(self, camera_id: str, source: str, source_key: str | None = None,
                       triggered_at: str | None = None, snapshots: int | None = None,

@@ -96,7 +96,10 @@ class CaptureManager:
             "Capture: started camera=%s event=%s snapshots=%d interval_seconds=%s video_seconds=%d",
             camera.id, event_id, capture.snapshots, capture.snapshot_interval_seconds, duration,
         )
-        video_task = asyncio.create_task(self._record_video(adapter.rtsp_url(True), event, event_dir, duration)) if duration > 0 else None
+        record_main = camera.record_stream == "main"
+        video_task = asyncio.create_task(
+            self._record_video(adapter.rtsp_url(record_main), event, event_dir, duration, camera.record_stream)
+        ) if duration > 0 else None
         try:
             for index in range(capture.snapshots):
                 if index:
@@ -172,16 +175,21 @@ class CaptureManager:
             LOG.warning("Capture: snapshot %d failed event=%s error=%s", index + 1, event["id"], row.get("error"))
         return row
 
-    async def _record_video(self, rtsp_url: str, event: dict[str, Any], event_dir: Path, duration: int) -> dict[str, Any]:
+    async def _record_video(self, rtsp_url: str, event: dict[str, Any], event_dir: Path, duration: int,
+                            stream: str = "main") -> dict[str, Any]:
         media_id = str(uuid.uuid4())
         path = event_dir / "clip.mp4"
         temporary = event_dir / "clip.tmp.mp4"
         captured_at = utcnow()
-        LOG.info("Capture: video recording started event=%s duration_seconds=%d", event["id"], duration)
+        LOG.info(
+            "Capture: video recording started event=%s stream=%s duration_seconds=%d",
+            event["id"], stream, duration,
+        )
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-i", rtsp_url,
                    "-t", str(duration), "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart",
                    "-y", str(temporary)]
         error = ""
+        actual_duration = 0.0
         try:
             await _run_process(command, timeout=duration + 35)
             codec = await _probe_codec(temporary)
@@ -196,19 +204,25 @@ class CaptureManager:
                 temporary.unlink(missing_ok=True)
                 temporary = converted
             os.replace(temporary, path)
+            actual_duration = await _probe_duration(path)
+            if actual_duration < duration * 0.8:
+                error = f"recording ended early: requested {duration}s, actual {actual_duration:.2f}s"
         except Exception as exc:
             error = str(exc)
             temporary.unlink(missing_ok=True)
         row = {"id": media_id, "event_id": event["id"], "kind": "video", "sequence": 100,
                "captured_at": captured_at, "path": str(path) if path.exists() else None, "mime_type": "video/mp4",
-               "size_bytes": path.stat().st_size if path.exists() else 0, "duration_seconds": duration,
+               "size_bytes": path.stat().st_size if path.exists() else 0, "duration_seconds": actual_duration,
                "error": error or None}
         self.db.add_media(row)
         await self.broadcast({"type": "video_complete", "event_id": event["id"], "media_id": media_id, "error": error})
         if error:
             LOG.warning("Capture: video recording failed event=%s error=%s", event["id"], error)
             raise CameraError(error)
-        LOG.info("Capture: video saved event=%s media=%s bytes=%d", event["id"], media_id, row["size_bytes"])
+        LOG.info(
+            "Capture: video saved event=%s media=%s stream=%s duration_seconds=%.2f bytes=%d",
+            event["id"], media_id, stream, actual_duration, row["size_bytes"],
+        )
         return row
 
     async def _analyze(self, event: dict[str, Any], camera: CameraConfig, snapshots: list[dict[str, Any]]) -> bool:
@@ -342,6 +356,21 @@ async def _probe_codec(path: Path) -> str:
     )
     out, _ = await asyncio.wait_for(process.communicate(), 20)
     return out.decode().strip().lower()
+
+
+async def _probe_duration(path: Path) -> float:
+    process = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path), stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, stderr = await asyncio.wait_for(process.communicate(), 20)
+    if process.returncode:
+        raise CameraError(stderr.decode(errors="replace")[-500:] or "unable to read recorded video duration")
+    try:
+        return float(out.decode().strip())
+    except ValueError as exc:
+        raise CameraError("unable to read recorded video duration") from exc
 
 
 async def _run_process(command: list[str], timeout: float) -> None:

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from camdash.cameras import CameraError
 from camdash.capture import CaptureManager, _parse_timestamp, capture_profile, safe_unlink
 from camdash.config import AppConfig, CameraConfig
 
@@ -61,3 +62,39 @@ async def test_person_only_analysis_requests_event_removal(tmp_path: Path, monke
         [{"id": "media-1", "path": str(tmp_path / "capture.jpg"), "thumb_path": None}],
     )
     assert remove is True
+
+
+@pytest.mark.asyncio
+async def test_short_video_uses_actual_duration_and_fails(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+
+    class FakeDatabase:
+        row = None
+
+        def add_media(self, row):
+            self.row = row
+
+    async def broadcast(_message):
+        pass
+
+    async def fake_run(command, timeout):
+        Path(command[-1]).write_bytes(b"video")
+
+    async def fake_codec(_path):
+        return "h264"
+
+    async def fake_duration(_path):
+        return 2.0
+
+    monkeypatch.setattr("camdash.capture._run_process", fake_run)
+    monkeypatch.setattr("camdash.capture._probe_codec", fake_codec)
+    monkeypatch.setattr("camdash.capture._probe_duration", fake_duration)
+    database = FakeDatabase()
+    manager = CaptureManager(database, lambda: cfg, broadcast)
+
+    with pytest.raises(CameraError, match="ended early"):
+        await manager._record_video("rtsp://camera/ch1", {"id": "event-1"}, tmp_path, 30, "sub")
+
+    assert database.row["duration_seconds"] == 2.0
+    assert database.row["path"].endswith("clip.mp4")
+    assert "requested 30s, actual 2.00s" in database.row["error"]

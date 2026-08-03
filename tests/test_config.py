@@ -11,16 +11,23 @@ def test_config_round_trip_and_masks_secrets(tmp_path: Path):
     path = tmp_path / "config.yaml"
     cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
         id="camera-one", name="Camera One", host="192.0.2.1", adapter="thingino",
-        username="thingino", password="private", token="private-token",
+        username="thingino", password="private", token="private-token", record_stream="sub",
     )])
     cfg.mqtt.password = "broker-secret"
     save_config(cfg, path)
     loaded, _ = load_config(path)
     assert loaded.cameras[0].password == "private"
+    assert loaded.cameras[0].record_stream == "sub"
     public = public_config(loaded)
     assert "password" not in public["cameras"][0]
     assert public["cameras"][0]["has_password"] is True
     assert "password" not in public["mqtt"]
+
+
+def test_camera_record_stream_validation():
+    camera = CameraConfig(id="camera-one", name="Camera One", host="192.0.2.1", record_stream="invalid")
+    with pytest.raises(ValueError, match="record stream"):
+        camera.validate()
 
 
 def test_public_update_preserves_blank_secrets(tmp_path: Path):

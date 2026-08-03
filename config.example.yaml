@@ -54,6 +54,7 @@ cameras:
     password: CHANGE_ME
     token: CHANGE_ME
     mqtt_topic: camdash/cameras/patio-camera/motion
+    record_stream: sub
     ptz: true
     sd_redundancy: true
     prompt_override: ""
@@ -68,6 +69,7 @@ cameras:
     username: ""
     password: ""
     mqtt_topic: ""
+    record_stream: main
     ptz: false
     sd_redundancy: false
     prompt_override: ""

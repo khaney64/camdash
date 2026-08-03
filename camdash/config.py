@@ -82,6 +82,7 @@ class CameraConfig:
     snapshot_sub: str = ""
     mjpeg_main: str = ""
     mjpeg_sub: str = ""
+    record_stream: str = "main"
     mqtt_topic: str = ""
     prompt_override: str = ""
     ptz: bool = False
@@ -95,6 +96,8 @@ class CameraConfig:
             raise ValueError("camera name and host are required")
         if self.adapter not in {"thingino", "onvif"}:
             raise ValueError("adapter must be thingino or onvif")
+        if self.record_stream not in {"main", "sub"}:
+            raise ValueError("record stream must be main or sub")
 
 
 @dataclass(slots=True)

@@ -101,6 +101,7 @@ textarea { resize: vertical; }
 .camera-form-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .camera-form-head h3 { margin: 0; }
 .camera-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.motor-health { align-self: center; margin-left: 4px; }.motor-health.success { color: var(--success); }.motor-health.error { color: #fca5a5; }
 .log-list { overflow: auto; max-height: calc(100vh - 190px); padding: 8px 0; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .log-entry { display: grid; grid-template-columns: 180px 68px 1fr; gap: 10px; padding: 5px 12px; border-bottom: 1px solid rgba(43,57,72,.5); }
 .log-entry .ERROR { color: #fca5a5; }.log-entry .WARNING { color: #fde68a; }.log-entry .INFO { color: #93c5fd; }

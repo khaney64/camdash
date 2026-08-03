@@ -30,7 +30,11 @@ from .capture import CaptureManager, safe_unlink
 from . import analyzer
 from .config import AppConfig, CameraConfig, load_config, merge_public_update, public_config, save_config
 from .db import Database
-from .event_sources import MqttSource, OnvifEventSource
+from .event_sources import MotionSuppressor, MqttSource, OnvifEventSource
+from .mjpeg import MjpegRelay, multipart_frame
+
+
+PTZ_MOTION_SUPPRESSION_SECONDS = 5.0
 
 
 class RingHandler(logging.Handler):
@@ -120,10 +124,12 @@ class AppState:
         self.capture = CaptureManager(
             self.db, lambda: self.config, self.broadcast, self.config_path.parent / "alerts.yaml"
         )
-        self.mqtt = MqttSource(lambda: self.config, self.capture.trigger)
+        self.motion_suppressor = MotionSuppressor()
+        self.mqtt = MqttSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
         self.onvif = OnvifEventSource(lambda: self.config, self.capture.trigger)
         self.retention_task: asyncio.Task | None = None
         self.hls: dict[str, tuple[asyncio.subprocess.Process, Path]] = {}
+        self.mjpeg_relays: dict[tuple[str, bool], MjpegRelay] = {}
 
     def _prepare_dirs(self) -> None:
         for name in ("media", "saved", "logs", "hls"):
@@ -143,12 +149,15 @@ class AppState:
             self.retention_task.cancel()
         for camera_id in list(self.hls):
             await self.stop_hls(camera_id)
+        for relay in self.mjpeg_relays.values():
+            relay.close()
+        self.mjpeg_relays.clear()
         self.db.close()
 
     async def restart_sources(self) -> None:
         self.mqtt.stop()
         self.onvif.stop()
-        self.mqtt = MqttSource(lambda: self.config, self.capture.trigger)
+        self.mqtt = MqttSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
         self.onvif = OnvifEventSource(lambda: self.config, self.capture.trigger)
         loop = asyncio.get_running_loop()
         self.mqtt.start(loop)
@@ -204,6 +213,21 @@ class AppState:
                     process.kill()
             shutil.rmtree(directory, ignore_errors=True)
             await self.broadcast({"type": "live", "camera_id": camera_id, "active": False})
+
+    def mjpeg_relay(self, camera_id: str, main: bool) -> MjpegRelay:
+        key = (camera_id, main)
+        relay = self.mjpeg_relays.get(key)
+        if relay is None:
+            def open_channel(channel: bool):
+                camera = self.config.camera(camera_id)
+                return adapter_for(camera).open_mjpeg(channel, read_timeout=12)
+
+            relay = MjpegRelay(
+                f"{camera_id}-{'main' if main else 'sub'}",
+                (lambda: open_channel(main), lambda: open_channel(not main)),
+            )
+            self.mjpeg_relays[key] = relay
+        return relay
 
 
 STATE: AppState | None = None
@@ -327,17 +351,36 @@ async def sd_status(camera_id: str):
 @app.post("/api/cameras/{camera_id}/ptz")
 async def ptz(camera_id: str, payload: PtzRequest):
     try:
-        camera = state().config.camera(camera_id)
+        s = state()
+        camera = s.config.camera(camera_id)
         if not camera.ptz:
             raise HTTPException(409, "PTZ is disabled for this camera")
         adapter = adapter_for(camera)
+        s.motion_suppressor.suppress(camera_id, PTZ_MOTION_SUPPRESSION_SECONDS)
         try:
-            await asyncio.to_thread(adapter.ptz, payload.command, payload.coarse)
+            result = await asyncio.to_thread(adapter.ptz, payload.command, payload.coarse)
         except CameraError:
-            if camera.adapter == "thingino":
-                raise
+            s.motion_suppressor.clear(camera_id)
             raise
-        return {"ok": True}
+        s.motion_suppressor.suppress(camera_id, PTZ_MOTION_SUPPRESSION_SECONDS)
+        LOG.info(
+            "PTZ: command accepted camera=%s adapter=%s command=%s coarse=%s result=%s",
+            camera_id, camera.adapter, payload.command, payload.coarse, result,
+        )
+        return {"accepted": True, "command": payload.command, "coarse": payload.coarse, "motor": result}
+    except KeyError as exc:
+        raise HTTPException(404, "camera not found") from exc
+    except CameraError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/cameras/{camera_id}/ptz/status")
+async def ptz_status(camera_id: str):
+    try:
+        camera = state().config.camera(camera_id)
+        if camera.adapter != "thingino" or not camera.ptz:
+            raise HTTPException(409, "motor health is available only for Thingino PTZ cameras")
+        return await asyncio.to_thread(adapter_for(camera).motor_status)
     except KeyError as exc:
         raise HTTPException(404, "camera not found") from exc
     except CameraError as exc:
@@ -362,19 +405,35 @@ async def live_info(camera_id: str, hd: bool = False):
 @app.get("/api/cameras/{camera_id}/live.mjpg")
 async def live_mjpeg(camera_id: str, hd: bool = False):
     try:
-        response = await asyncio.to_thread(adapter_for(state().config.camera(camera_id)).open_mjpeg, hd)
+        s = state()
+        camera = s.config.camera(camera_id)
+        if camera.adapter != "thingino":
+            raise HTTPException(409, "MJPEG relay is available only for Thingino cameras")
+        relay = s.mjpeg_relay(camera_id, hd)
+        token, queue = relay.subscribe()
+        LOG.debug("MJPEG viewer subscribed camera=%s hd=%s token=%s", camera_id, hd, token)
     except KeyError as exc:
         raise HTTPException(404, "camera not found") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(502, str(exc)) from exc
 
-    def chunks():
+    async def chunks():
+        first = True
         try:
-            yield from response.iter_content(64 * 1024)
+            while True:
+                frame = await asyncio.to_thread(queue.get)
+                if first:
+                    LOG.debug("MJPEG viewer forwarding first frame camera=%s hd=%s size=%s", camera_id, hd, len(frame))
+                    first = False
+                yield multipart_frame(frame)
         finally:
-            response.close()
-    content_type = response.headers.get("content-type", "multipart/x-mixed-replace; boundary=frame")
-    return StreamingResponse(chunks(), media_type=content_type)
+            relay.unsubscribe(token)
+    return StreamingResponse(
+        chunks(), media_type="multipart/x-mixed-replace; boundary=camdashframe",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/cameras/{camera_id}/hls/start")

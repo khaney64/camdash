@@ -8,6 +8,13 @@ from camdash.config import AppConfig, CameraConfig, save_config
 def test_frontend_initializes_camera_dropdowns():
     source = (Path(__file__).parents[1] / "camdash" / "static" / "app.js").read_text(encoding="utf-8")
     assert "await loadSettings();await loadCameras();" in source
+    assert "data-motor-status" in source
+    assert "data-motor-restart" not in source
+
+
+def test_mjpeg_proxy_uses_shared_relay():
+    source = (Path(__file__).parents[1] / "camdash" / "main.py").read_text(encoding="utf-8")
+    assert "s.mjpeg_relay(camera_id, hd)" in source
 
 
 def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):

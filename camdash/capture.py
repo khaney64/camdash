@@ -97,14 +97,37 @@ class CaptureManager:
             camera.id, event_id, capture.snapshots, capture.snapshot_interval_seconds, duration,
         )
         record_main = camera.record_stream == "main"
-        video_task = asyncio.create_task(
-            self._record_video(adapter.rtsp_url(record_main), event, event_dir, duration, camera.record_stream)
-        ) if duration > 0 else None
+        video_path = event_dir / "clip.mp4"
+        video_started_at = utcnow()
+        video_duration = 0.0
+        if duration > 0:
+            try:
+                video = await self._record_video(
+                    adapter.rtsp_url(record_main), event, event_dir, duration, camera.record_stream,
+                )
+                video_started_at = video["captured_at"]
+                video_duration = float(video.get("duration_seconds") or 0)
+            except Exception as exc:
+                errors.append(f"video: {exc}")
+                LOG.exception("video capture failed camera=%s event=%s", camera.id, event_id)
+                if video_path.exists():
+                    try:
+                        video_duration = await _probe_duration(video_path)
+                    except Exception:
+                        LOG.exception("recorded video duration probe failed camera=%s event=%s", camera.id, event_id)
+
         try:
             for index in range(capture.snapshots):
-                if index:
-                    await asyncio.sleep(capture.snapshot_interval_seconds)
-                media = await self._snapshot(adapter, event, event_dir, index)
+                if duration > 0:
+                    requested_offset = index * capture.snapshot_interval_seconds
+                    offset = min(requested_offset, max(0.0, video_duration - 0.1))
+                    media = await self._snapshot_from_video(
+                        video_path, event, event_dir, index, offset, video_started_at,
+                    )
+                else:
+                    if index:
+                        await asyncio.sleep(capture.snapshot_interval_seconds)
+                    media = await self._snapshot(adapter, event, event_dir, index)
                 snapshots.append(media)
                 if index == 0 and media.get("path"):
                     self.db.update_event(event_id, primary_media_id=media["id"])
@@ -121,13 +144,6 @@ class CaptureManager:
             except Exception as exc:
                 errors.append(f"analysis: {exc}")
                 LOG.exception("analysis failed event=%s", event_id)
-
-        if video_task:
-            try:
-                await video_task
-            except Exception as exc:
-                errors.append(f"video: {exc}")
-                LOG.exception("video capture failed camera=%s event=%s", camera.id, event_id)
 
         if remove_person_only:
             current = self.db.get_event(event_id)
@@ -173,6 +189,43 @@ class CaptureManager:
             )
         else:
             LOG.warning("Capture: snapshot %d failed event=%s error=%s", index + 1, event["id"], row.get("error"))
+        return row
+
+    async def _snapshot_from_video(self, video_path: Path, event: dict[str, Any], event_dir: Path, index: int,
+                                   offset_seconds: float, video_started_at: str) -> dict[str, Any]:
+        media_id = str(uuid.uuid4())
+        captured_at = (
+            datetime.fromisoformat(video_started_at) + timedelta(seconds=offset_seconds)
+        ).isoformat()
+        path = event_dir / f"snapshot-{index + 1:02d}.jpg"
+        thumb = event_dir / f"snapshot-{index + 1:02d}-thumb.jpg"
+        try:
+            if not video_path.exists():
+                raise CameraError("recorded video is unavailable")
+            await _run_process([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video_path),
+                "-ss", f"{offset_seconds:.3f}", "-frames:v", "1", "-q:v", "2", "-y", str(path),
+            ], timeout=30)
+            if not path.exists() or not path.stat().st_size:
+                raise CameraError("video snapshot extraction produced no image")
+            await asyncio.to_thread(make_thumbnail, path, thumb)
+            row = {"id": media_id, "event_id": event["id"], "kind": "snapshot", "sequence": index,
+                   "captured_at": captured_at, "path": str(path), "thumb_path": str(thumb),
+                   "mime_type": "image/jpeg", "size_bytes": path.stat().st_size}
+        except Exception as exc:
+            row = {"id": media_id, "event_id": event["id"], "kind": "snapshot", "sequence": index,
+                   "captured_at": captured_at, "mime_type": "image/jpeg", "error": str(exc)}
+        self.db.add_media(row)
+        if row.get("path"):
+            LOG.info(
+                "Capture: snapshot %d derived from video event=%s media=%s offset_seconds=%.3f bytes=%d",
+                index + 1, event["id"], media_id, offset_seconds, row.get("size_bytes", 0),
+            )
+        else:
+            LOG.warning(
+                "Capture: snapshot %d video extraction failed event=%s offset_seconds=%.3f error=%s",
+                index + 1, event["id"], offset_seconds, row.get("error"),
+            )
         return row
 
     async def _record_video(self, rtsp_url: str, event: dict[str, Any], event_dir: Path, duration: int,

@@ -5,7 +5,7 @@ import pytest
 
 from camdash.cameras import CameraError
 from camdash.capture import CaptureManager, _parse_timestamp, capture_profile, safe_unlink
-from camdash.config import AppConfig, CameraConfig
+from camdash.config import AppConfig, CameraConfig, CaptureConfig
 
 
 def test_day_night_and_camera_override(tmp_path: Path):
@@ -102,3 +102,113 @@ async def test_short_video_uses_actual_duration_and_fails(tmp_path: Path, monkey
     assert database.row["path"].endswith("clip.mp4")
     assert "requested 30s, actual 2.00s" in database.row["error"]
     assert commands[0][commands[0].index("-use_wallclock_as_timestamps") + 1] == "1"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_is_derived_from_video_at_requested_offset(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+
+    class FakeDatabase:
+        row = None
+
+        def add_media(self, row):
+            self.row = row
+
+    commands = []
+
+    async def fake_run(command, timeout):
+        commands.append((command, timeout))
+        Path(command[-1]).write_bytes(b"jpeg")
+
+    def fake_thumbnail(_source, target):
+        target.write_bytes(b"thumbnail")
+
+    async def broadcast(_message):
+        pass
+
+    monkeypatch.setattr("camdash.capture._run_process", fake_run)
+    monkeypatch.setattr("camdash.capture.make_thumbnail", fake_thumbnail)
+    database = FakeDatabase()
+    manager = CaptureManager(database, lambda: cfg, broadcast)
+
+    row = await manager._snapshot_from_video(
+        video, {"id": "event-1"}, tmp_path, 1, 1.5, "2026-08-03T12:00:00+00:00",
+    )
+
+    command, timeout = commands[0]
+    assert command[0] == "ffmpeg"
+    assert command[command.index("-i") + 1] == str(video)
+    assert command[command.index("-ss") + 1] == "1.500"
+    assert "-frames:v" in command
+    assert timeout == 30
+    assert row["captured_at"] == "2026-08-03T12:00:01.500000+00:00"
+    assert row["path"].endswith("snapshot-02.jpg")
+    assert database.row == row
+
+
+@pytest.mark.asyncio
+async def test_event_records_video_before_deriving_snapshots(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1", record_stream="sub")
+    capture = CaptureConfig(snapshots=2, snapshot_interval_seconds=1, day_video_seconds=30,
+                            night_video_seconds=30, cooldown_seconds=0)
+    calls = []
+
+    class FakeDatabase:
+        def __init__(self):
+            self.media = []
+            self.updates = []
+
+        def update_event(self, event_id, **values):
+            self.updates.append((event_id, values))
+
+        def get_event(self, event_id):
+            return {"id": event_id, "media": self.media}
+
+    class FakeAdapter:
+        def rtsp_url(self, main):
+            assert main is False
+            return "rtsp://camera/ch1"
+
+        def fetch_snapshot(self, main):
+            raise AssertionError("event capture must not call the camera snapshot endpoint")
+
+    async def broadcast(_message):
+        pass
+
+    database = FakeDatabase()
+    manager = CaptureManager(database, lambda: cfg, broadcast)
+
+    async def fake_record(*_args):
+        calls.append("video")
+        path = tmp_path / "media" / "2026" / "08" / "03" / "event-1" / "clip.mp4"
+        path.write_bytes(b"video")
+        row = {"id": "video-1", "kind": "video", "captured_at": "2026-08-03T12:00:00+00:00",
+               "duration_seconds": 30.0, "path": str(path)}
+        database.media.append(row)
+        return row
+
+    async def fake_snapshot(_video_path, _event, _event_dir, index, offset, _started_at):
+        calls.append(f"snapshot-{index}@{offset}")
+        row = {"id": f"snapshot-{index}", "kind": "snapshot", "path": str(tmp_path / f"{index}.jpg")}
+        database.media.append(row)
+        return row
+
+    async def fake_analyze(_event, _camera, _snapshots):
+        calls.append("analyze")
+        return False
+
+    monkeypatch.setattr("camdash.capture.adapter_for", lambda _camera: FakeAdapter())
+    monkeypatch.setattr(manager, "_record_video", fake_record)
+    monkeypatch.setattr(manager, "_snapshot_from_video", fake_snapshot)
+    monkeypatch.setattr(manager, "_analyze", fake_analyze)
+
+    await manager._run({
+        "id": "event-1", "camera_name": "Cam", "triggered_at": "2026-08-03T12:00:00+00:00",
+        "received_at": "2026-08-03T12:00:00+00:00", "profile": "day",
+    }, camera, capture)
+
+    assert calls == ["video", "snapshot-0@0", "snapshot-1@1", "analyze"]
+    assert any(values.get("primary_media_id") == "snapshot-0" for _, values in database.updates)

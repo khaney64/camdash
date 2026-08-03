@@ -4,9 +4,9 @@ CAM Dashboard is a LAN-hosted, event-driven dashboard for multiple ONVIF and Thi
 
 ## Capture flow
 
-Thingino cameras publish normalized motion events to an authenticated Mosquitto listener. Other ONVIF cameras can use PullPoint event subscriptions. Each trigger starts a main-stream RTSP recording and captures three main-stream snapshots one second apart. All snapshots are analyzed, detections are merged, and alert rules run once for the event.
+Thingino cameras publish normalized motion events to an authenticated Mosquitto listener. Other ONVIF cameras can use PullPoint event subscriptions. Each trigger records the configured RTSP stream, then derives snapshots from the completed local clip at the configured interval. This avoids competing camera snapshot requests while recording. Derived snapshots become available after recording finishes; they are then analyzed, detections are merged, and alert rules run once for the event.
 
-`ch0` is the main/high-resolution stream. `ch1` is the low-resolution stream used by default for Thingino Live view. Snapshot endpoints are used for discrete stills; MJPEG is used only for low-latency browser viewing.
+`ch0` is the main/high-resolution stream. `ch1` is the low-resolution stream used by default for Thingino Live view and event recording. Camera snapshot endpoints remain available for manual snapshot-only requests but are not used during recorded events. MJPEG is used only for low-latency browser viewing.
 
 ## Live view and PTZ
 

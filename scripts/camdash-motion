@@ -1,0 +1,152 @@
+#!/bin/sh
+# Thingino/Prudynt motion callback for CAM Dashboard.
+
+. /usr/share/prudynt-helpers
+
+[ "$1" != "stop" ] && singleton "$0"
+
+MOTION_ALARM="/run/motion/motion_alarm"
+CAMDASH_TMP="/mnt/mmcblk0p1/.camdash/.tmp"
+MOTION_STOP_FILE="/run/motors.pid"
+MOTION_VIDEO_CHANNEL=0
+
+mkdir -p "$CAMDASH_TMP"
+chmod 700 "$CAMDASH_TMP"
+export TMPDIR="$CAMDASH_TMP"
+mkdir -p "$(dirname "$MOTION_ALARM")"
+
+MOTION_VIDEO_LENGTH=$(jct /etc/prudynt.json get motion.video_length 2>/dev/null)
+[ -z "$MOTION_VIDEO_LENGTH" ] && MOTION_VIDEO_LENGTH=$(jct /etc/prudynt.json get recorder.duration 2>/dev/null)
+[ -z "$MOTION_VIDEO_LENGTH" ] && MOTION_VIDEO_LENGTH=10
+[ "$MOTION_VIDEO_LENGTH" -eq "$MOTION_VIDEO_LENGTH" ] 2>/dev/null || MOTION_VIDEO_LENGTH=10
+
+domain=motion
+
+get_value() {
+	jct /etc/prudynt.json get "motion.$1" 2>/dev/null
+}
+
+ha_enabled() {
+	[ "true" = "$(jct /etc/thingino.json get ha.enabled 2>/dev/null)" ]
+}
+
+set_enabled() {
+	echo "{ \"motion\": { \"enabled\": $1 } }" | prudyntctl json -
+	jct /etc/prudynt.json set "motion.enabled" "$1"
+}
+
+start() {
+	echo_info "Start motion"
+	if [ -f "$MOTION_STOP_FILE" ]; then
+		echo_error "Motor motion file present. Exiting."
+		exit 1
+	fi
+
+	MOTION_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+	MOTION_PHOTO_FILE="$CAMDASH_TMP/motion_${MOTION_TIMESTAMP}.jpg"
+	MOTION_VIDEO_FILE="$CAMDASH_TMP/motion_${MOTION_TIMESTAMP}.mp4"
+
+	echo_info "Set $MOTION_ALARM"
+	touch "$MOTION_ALARM"
+
+	# These notifications must not wait for local photo/video processing.
+	if ha_enabled && [ -x /usr/sbin/ha-event ]; then
+		ha-event motion ON &
+	fi
+	if [ "true" = "$(get_value send2mqtt)" ]; then
+		echo_info "Notify CAM Dashboard via MQTT"
+		MOTION_PHOTO_FILE= MOTION_VIDEO_FILE= send2mqtt &
+	fi
+
+	need_photo=false
+	need_video=false
+	for service in email ftp gphotos gotify ntfy storage telegram webhook; do
+		if [ "true" = "$(get_value send2${service})" ]; then
+			[ "true" = "$(jct /etc/send2.json get ${service}.send_photo 2>/dev/null)" ] && need_photo=true
+			[ "true" = "$(jct /etc/send2.json get ${service}.send_video 2>/dev/null)" ] && need_video=true
+		fi
+	done
+
+	if [ "$need_photo" = "true" ]; then
+		echo_info "Capture snapshot $MOTION_PHOTO_FILE"
+		prudyntctl snapshot -c "$MOTION_VIDEO_CHANNEL" >"$MOTION_PHOTO_FILE"
+		export MOTION_PHOTO_FILE
+	else
+		unset MOTION_PHOTO_FILE
+	fi
+
+	if [ "$need_video" = "true" ]; then
+		echo_info "Start recording $MOTION_VIDEO_FILE"
+		echo "START $MOTION_VIDEO_FILE $MOTION_VIDEO_LENGTH $MOTION_VIDEO_CHANNEL" >/run/prudynt/mp4ctl
+		sleep 2
+		while [ ! -f "$MOTION_VIDEO_FILE" ]; do sleep 1; done
+
+		max_wait_cap=$((MOTION_VIDEO_LENGTH + 10))
+		[ "$max_wait_cap" -lt 20 ] && max_wait_cap=20
+		curr_size=$(stat -c%s "$MOTION_VIDEO_FILE" 2>/dev/null || echo 0)
+		stable_count=0
+		max_wait=0
+		while [ "$stable_count" -lt 2 ] && [ "$max_wait" -lt "$max_wait_cap" ]; do
+			sleep 1
+			prev_size=$curr_size
+			curr_size=$(stat -c%s "$MOTION_VIDEO_FILE" 2>/dev/null || echo 0)
+			if [ "$curr_size" -eq "$prev_size" ] && [ "$curr_size" -gt 0 ]; then
+				stable_count=$((stable_count + 1))
+			else
+				stable_count=0
+			fi
+			max_wait=$((max_wait + 1))
+		done
+		export MOTION_VIDEO_FILE
+	else
+		unset MOTION_VIDEO_FILE
+	fi
+
+	send2_pids=""
+	for service in email ftp ntfy storage gphotos gotify webhook; do
+		if [ "true" = "$(get_value send2${service})" ]; then
+			echo_info "Run send2${service}"
+			MOTION_PHOTO_FILE="$MOTION_PHOTO_FILE" MOTION_VIDEO_FILE="$MOTION_VIDEO_FILE" "send2${service}" &
+			send2_pids="$send2_pids $!"
+		fi
+	done
+
+	if [ "true" = "$(get_value send2telegram)" ] && { [ "$need_photo" = "true" ] || [ "$need_video" = "true" ]; }; then
+		MOTION_PHOTO_FILE="$MOTION_PHOTO_FILE" MOTION_VIDEO_FILE="$MOTION_VIDEO_FILE" send2telegram -v >>/tmp/send2telegram.log 2>&1 &
+		send2_pids="$send2_pids $!"
+	fi
+	if [ "true" = "$(get_value playonspeaker)" ]; then
+		playonspeaker &
+		send2_pids="$send2_pids $!"
+	fi
+
+	if [ -n "$send2_pids" ]; then
+		(
+			for pid in $send2_pids; do
+				while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+			done
+			[ -n "$MOTION_PHOTO_FILE" ] && [ -f "$MOTION_PHOTO_FILE" ] && rm -f "$MOTION_PHOTO_FILE"
+			[ -n "$MOTION_VIDEO_FILE" ] && [ -f "$MOTION_VIDEO_FILE" ] && rm -f "$MOTION_VIDEO_FILE"
+		) &
+	fi
+}
+
+stop() {
+	echo_info "Stop motion"
+	if [ -f "$MOTION_ALARM" ]; then
+		rm -f "$MOTION_ALARM"
+		if ha_enabled && [ -x /usr/sbin/ha-event ]; then
+			ha-event motion OFF &
+		fi
+	fi
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	enable) set_enabled true ;;
+	disable) set_enabled false ;;
+	*) start ;;
+esac
+
+exit 0

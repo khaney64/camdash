@@ -12,6 +12,9 @@ broker=$3
 mqtt_user=$4
 case "$camera_id" in *[!a-z0-9-]*|'') echo "invalid camera id" >&2; exit 2;; esac
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+scp -O "$script_dir/camdash-motion" "$host:/tmp/camdash-motion"
+
 # The remote TTY prompt keeps the password out of arguments, files, and shell history.
 ssh -tt "$host" sh -s -- "$camera_id" "$broker" "$mqtt_user" <<'REMOTE'
 set -eu
@@ -26,6 +29,12 @@ printf "\n" >/dev/tty
 stamp=$(date +%Y%m%d-%H%M%S)
 cp /etc/send2.json "/etc/send2.json.camdash-$stamp"
 cp /etc/prudynt.json "/etc/prudynt.json.camdash-$stamp"
+
+mkdir -p /mnt/mmcblk0p1/.camdash
+cp /tmp/camdash-motion /mnt/mmcblk0p1/.camdash/camdash-motion
+chmod 755 /mnt/mmcblk0p1/.camdash/camdash-motion
+rm -f /tmp/camdash-motion
+jct /etc/prudynt.json set motion.script_path /mnt/mmcblk0p1/.camdash/camdash-motion
 
 jct /etc/send2.json set mqtt.enabled true
 jct /etc/send2.json set mqtt.client_id "$camera_id"

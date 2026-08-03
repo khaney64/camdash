@@ -54,18 +54,19 @@ class MqttSource:
     def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
         self.connected = reason_code == 0
         if self.connected:
-            client.subscribe(self.config_getter().mqtt.topic, qos=1)
+            topic = self.config_getter().mqtt.topic
+            client.subscribe(topic, qos=1)
             self.last_error = ""
-            LOG.info("MQTT connected and subscribed")
+            LOG.info("MQTT: connected and subscribed topic=%s", topic)
         else:
             self.last_error = f"connect reason {reason_code}"
-            LOG.error("MQTT connection failed: %s", reason_code)
+            LOG.error("MQTT: connection failed reason=%s", reason_code)
 
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties) -> None:
         self.connected = False
         if reason_code:
             self.last_error = f"disconnect reason {reason_code}"
-            LOG.warning("MQTT disconnected: %s", reason_code)
+            LOG.warning("MQTT: disconnected reason=%s", reason_code)
 
     def _on_message(self, client, userdata, message) -> None:
         if not self.loop:
@@ -74,7 +75,12 @@ class MqttSource:
             payload = json.loads(message.payload.decode("utf-8"))
             camera_id = str(payload.get("camera_id") or _camera_from_topic(message.topic))
             event = str(payload.get("event", "motion")).lower()
+            LOG.info(
+                "MQTT: notification received topic=%s camera=%s event=%s bytes=%d",
+                message.topic, camera_id, event, len(message.payload),
+            )
             if event != "motion":
+                LOG.info("MQTT: notification ignored topic=%s camera=%s event=%s", message.topic, camera_id, event)
                 return
             configured = self.config_getter().camera(camera_id)
             if configured.mqtt_topic and configured.mqtt_topic != message.topic:
@@ -82,11 +88,22 @@ class MqttSource:
             timestamp = str(payload.get("timestamp", ""))
             source_key = f"{message.topic}:{timestamp}:{event}"
             asyncio.run_coroutine_threadsafe(
-                self.trigger(camera_id, "mqtt", source_key=source_key, triggered_at=timestamp), self.loop,
+                self._trigger_and_log(camera_id, source_key, timestamp), self.loop,
             )
         except Exception as exc:
             self.last_error = str(exc)
-            LOG.warning("rejected MQTT message topic=%s: %s", message.topic, exc)
+            LOG.warning("MQTT: notification rejected topic=%s error=%s", message.topic, exc)
+
+    async def _trigger_and_log(self, camera_id: str, source_key: str, timestamp: str) -> None:
+        try:
+            result = await self.trigger(camera_id, "mqtt", source_key=source_key, triggered_at=timestamp)
+            if result.get("duplicate"):
+                LOG.info("MQTT: duplicate trigger ignored camera=%s", camera_id)
+            else:
+                LOG.info("MQTT: trigger routed camera=%s event=%s", camera_id, result.get("id", "unknown"))
+        except Exception as exc:
+            self.last_error = str(exc)
+            LOG.exception("MQTT: trigger failed camera=%s error=%s", camera_id, exc)
 
 
 class OnvifEventSource:
@@ -120,19 +137,32 @@ class OnvifEventSource:
                 client = ONVIFCamera(camera.host, camera.onvif_port, camera.username, camera.password)
                 pullpoint = client.create_pullpoint_service()
                 self.health[camera.id] = {"connected": True, "error": ""}
+                LOG.info("ONVIF: event subscription connected camera=%s", camera.id)
                 while not self.stop_event.is_set():
                     response = pullpoint.PullMessages({"Timeout": "PT20S", "MessageLimit": 32})
                     for notification in getattr(response, "NotificationMessage", []) or []:
                         if _notification_is_motion(notification):
                             source_key = _notification_key(camera.id, notification)
+                            LOG.info("ONVIF: motion notification received camera=%s", camera.id)
                             if self.loop:
                                 asyncio.run_coroutine_threadsafe(
-                                    self.trigger(camera.id, "onvif", source_key=source_key, triggered_at=None), self.loop,
+                                    self._trigger_and_log(camera.id, source_key), self.loop,
                                 )
             except Exception as exc:
                 self.health[camera.id] = {"connected": False, "error": str(exc)}
-                LOG.warning("ONVIF event worker %s: %s", camera.id, exc)
+                LOG.warning("ONVIF: event worker camera=%s error=%s", camera.id, exc)
                 self.stop_event.wait(10)
+
+    async def _trigger_and_log(self, camera_id: str, source_key: str) -> None:
+        try:
+            result = await self.trigger(camera_id, "onvif", source_key=source_key, triggered_at=None)
+            if result.get("duplicate"):
+                LOG.info("ONVIF: duplicate trigger ignored camera=%s", camera_id)
+            else:
+                LOG.info("ONVIF: trigger routed camera=%s event=%s", camera_id, result.get("id", "unknown"))
+        except Exception as exc:
+            self.health[camera_id] = {"connected": False, "error": str(exc)}
+            LOG.exception("ONVIF: trigger failed camera=%s error=%s", camera_id, exc)
 
 
 def _notification_is_motion(notification: Any) -> bool:

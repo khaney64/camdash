@@ -44,6 +44,7 @@ class CaptureManager:
         if camera_id in self.inflight:
             event_id, _ = self.inflight[camera_id]
             self.db.increment_trigger(event_id)
+            LOG.info("Capture: trigger coalesced camera=%s event=%s source=%s", camera_id, event_id, source)
             await self.broadcast({"type": "event_trigger", "event_id": event_id, "camera_id": camera_id, "coalesced": True})
             return self.db.get_event(event_id) or {"id": event_id}
 
@@ -61,7 +62,13 @@ class CaptureManager:
             "profile": profile, "status": "capturing", "created_at": received.isoformat(),
         }
         if not self.db.create_event(row):
+            LOG.info("Capture: duplicate trigger ignored camera=%s source=%s", camera_id, source)
             return {"duplicate": True, "camera_id": camera_id, "source_key": source_key}
+        duration = effective.day_video_seconds if profile == "day" else effective.night_video_seconds
+        LOG.info(
+            "Capture: trigger accepted camera=%s event=%s source=%s profile=%s snapshots=%d video_seconds=%d",
+            camera_id, event_id, source, profile, effective.snapshots, duration,
+        )
         task = asyncio.create_task(self._run(row, camera, effective), name=f"capture-{camera_id}-{event_id}")
         self.inflight[camera_id] = (event_id, task)
         task.add_done_callback(lambda _: self.inflight.pop(camera_id, None))
@@ -85,6 +92,10 @@ class CaptureManager:
         duration = capture.day_video_seconds if event["profile"] == "day" else capture.night_video_seconds
         errors: list[str] = []
         snapshots: list[dict[str, Any]] = []
+        LOG.info(
+            "Capture: started camera=%s event=%s snapshots=%d interval_seconds=%s video_seconds=%d",
+            camera.id, event_id, capture.snapshots, capture.snapshot_interval_seconds, duration,
+        )
         video_task = asyncio.create_task(self._record_video(adapter.rtsp_url(True), event, event_dir, duration)) if duration > 0 else None
         try:
             for index in range(capture.snapshots):
@@ -121,6 +132,7 @@ class CaptureManager:
                 self.delete_event_files(current)
                 self.db.delete_event(event_id)
             await self.broadcast({"type": "event_deleted", "event_id": event_id, "reason": "person_only"})
+            LOG.info("Capture: event removed camera=%s event=%s reason=person_only", camera.id, event_id)
             await asyncio.sleep(max(0, capture.cooldown_seconds))
             return
 
@@ -129,6 +141,10 @@ class CaptureManager:
         status = "complete" if not errors else ("partial" if has_media else "failed")
         self.db.update_event(event_id, status=status, error="; ".join(errors) or None)
         await self.broadcast({"type": "event_complete", "event": self.db.get_event(event_id)})
+        LOG.info(
+            "Capture: finished camera=%s event=%s status=%s media=%d errors=%d",
+            camera.id, event_id, status, len(current.get("media", [])) if current else 0, len(errors),
+        )
         await asyncio.sleep(max(0, capture.cooldown_seconds))
 
     async def _snapshot(self, adapter, event: dict[str, Any], event_dir: Path, index: int) -> dict[str, Any]:
@@ -147,6 +163,13 @@ class CaptureManager:
             row = {"id": media_id, "event_id": event["id"], "kind": "snapshot", "sequence": index,
                    "captured_at": captured_at, "mime_type": "image/jpeg", "error": str(exc)}
         self.db.add_media(row)
+        if row.get("path"):
+            LOG.info(
+                "Capture: snapshot %d saved event=%s media=%s bytes=%d",
+                index + 1, event["id"], media_id, row.get("size_bytes", 0),
+            )
+        else:
+            LOG.warning("Capture: snapshot %d failed event=%s error=%s", index + 1, event["id"], row.get("error"))
         return row
 
     async def _record_video(self, rtsp_url: str, event: dict[str, Any], event_dir: Path, duration: int) -> dict[str, Any]:
@@ -154,6 +177,7 @@ class CaptureManager:
         path = event_dir / "clip.mp4"
         temporary = event_dir / "clip.tmp.mp4"
         captured_at = utcnow()
+        LOG.info("Capture: video recording started event=%s duration_seconds=%d", event["id"], duration)
         command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-i", rtsp_url,
                    "-t", str(duration), "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart",
                    "-y", str(temporary)]
@@ -182,20 +206,30 @@ class CaptureManager:
         self.db.add_media(row)
         await self.broadcast({"type": "video_complete", "event_id": event["id"], "media_id": media_id, "error": error})
         if error:
+            LOG.warning("Capture: video recording failed event=%s error=%s", event["id"], error)
             raise CameraError(error)
+        LOG.info("Capture: video saved event=%s media=%s bytes=%d", event["id"], media_id, row["size_bytes"])
         return row
 
     async def _analyze(self, event: dict[str, Any], camera: CameraConfig, snapshots: list[dict[str, Any]]) -> bool:
         cfg = self.config_getter()
         prompt = camera.prompt_override.strip() or cfg.analysis.prompt
         results = []
-        for media in snapshots:
+        analyzable = [media for media in snapshots if media.get("path")]
+        LOG.info("Analysis: processing %d image(s) camera=%s event=%s", len(analyzable), camera.id, event["id"])
+        for index, media in enumerate(analyzable, 1):
             if not media.get("path"):
                 continue
+            LOG.info("Analysis: image %d/%d analyzing camera=%s event=%s media=%s", index, len(analyzable), camera.id, event["id"], media["id"])
             result = await asyncio.to_thread(analyzer.analyze_image, Path(media["path"]), cfg.analysis, prompt)
             results.append(result)
             self.db.update_media(media["id"], analyzed=True, analysis_json=result)
             await self.broadcast({"type": "analysis_update", "event_id": event["id"], "media_id": media["id"], "analysis": result})
+            detections = _detection_summary(result)
+            if result.get("error"):
+                LOG.warning("Analysis: image %d/%d failed camera=%s media=%s error=%s", index, len(analyzable), camera.id, media["id"], result["error"])
+            else:
+                LOG.info("Analysis: image %d/%d complete camera=%s media=%s detections=%s", index, len(analyzable), camera.id, media["id"], detections)
         aggregate = analyzer.aggregate(results)
         self.db.update_event(event["id"], analysis_json=aggregate)
         failures = [str(result["error"]) for result in results if result.get("error")]
@@ -207,7 +241,7 @@ class CaptureManager:
             if detection.get("label")
         }
         if cfg.analysis.remove_person_only_images and labels and labels <= {"person", "human", "legs"}:
-            LOG.info("removing person-only event camera=%s event=%s", camera.id, event["id"])
+            LOG.info("Analysis: person-only event marked for removal camera=%s event=%s", camera.id, event["id"])
             return True
         event_with_analysis = self.db.get_event(event["id"]) or event
         if cfg.analysis.alerts_enabled:
@@ -217,6 +251,14 @@ class CaptureManager:
                                             cfg.analysis.alert_rules_enabled)
             self.db.update_event(event["id"], alert_json=alert)
             await self.broadcast({"type": "alert_update", "event_id": event["id"], "alert": alert})
+            LOG.info(
+                "Alert: evaluated camera=%s event=%s sent=%s matched=%s",
+                camera.id, event["id"], bool(alert.get("sent")), bool(alert.get("matched")),
+            )
+        LOG.info(
+            "Analysis: done camera=%s event=%s images=%d detections=%s errors=%d",
+            camera.id, event["id"], len(results), _detection_summary(aggregate), len(failures),
+        )
         return False
 
     def delete_event_files(self, event: dict[str, Any]) -> None:
@@ -255,6 +297,16 @@ class CaptureManager:
         if candidates:
             await self.broadcast({"type": "retention", "deleted": len(candidates)})
         return len(candidates)
+
+
+def _detection_summary(result: dict[str, Any]) -> str:
+    values = []
+    for detection in result.get("detections", []) or []:
+        label = str(detection.get("label", "")).strip()
+        name = str(detection.get("name", "")).strip()
+        if label:
+            values.append(f"{label}/{name}" if name else label)
+    return ", ".join(values) or "none"
 
 
 def capture_profile(cfg: AppConfig, camera: CameraConfig, timestamp: datetime) -> tuple[str, CaptureConfig]:

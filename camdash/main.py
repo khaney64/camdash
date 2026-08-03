@@ -7,6 +7,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import mimetypes
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -53,6 +54,49 @@ logging.getLogger().setLevel(os.environ.get("CAMDASH_LOG_LEVEL", "INFO"))
 LOG = logging.getLogger("camdash")
 
 
+class RedactingUtcFormatter(logging.Formatter):
+    converter = time.gmtime
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _redact(super().format(record))
+
+
+def _read_persisted_logs(log_path: Path, maximum: int = 500) -> list[dict[str, Any]]:
+    pattern = re.compile(
+        r"^(\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}(?:,\d{3})?Z?) "
+        r"(DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+) (.*)$"
+    )
+    entries: collections.deque[dict[str, Any]] = collections.deque(maxlen=maximum)
+    paths = [Path(f"{log_path}.{index}") for index in range(5, 0, -1)] + [log_path]
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = pattern.match(line)
+            if not match:
+                if entries and line.strip():
+                    entries[-1]["message"] = _redact(f'{entries[-1]["message"]}\n{line}')[-4000:]
+                continue
+            timestamp, level, logger_name, message = match.groups()
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace(",", ".").replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            entries.append({
+                "time": parsed.astimezone(timezone.utc).isoformat(),
+                "level": level,
+                "logger": logger_name,
+                "message": _redact(message),
+            })
+    return list(entries)
+
+
 class PtzRequest(BaseModel):
     command: str
     coarse: bool = False
@@ -65,8 +109,12 @@ class AppState:
         log_path = self.config.root / "logs" / "camdash.log"
         if not any(isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_path for h in logging.getLogger().handlers):
             file_handler = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
-            file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+            file_handler.setFormatter(RedactingUtcFormatter(
+                "%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%SZ"
+            ))
             logging.getLogger().addHandler(file_handler)
+        RING.entries.clear()
+        RING.entries.extend(_read_persisted_logs(log_path, RING.entries.maxlen or 500))
         self.db = Database(self.config.root / "camdash.db")
         self.listeners: set[asyncio.Queue] = set()
         self.capture = CaptureManager(
@@ -417,6 +465,7 @@ async def save_media(media_id: str):
     try:
         item = await asyncio.to_thread(state().capture.save, media)
         await state().broadcast({"type": "saved", "item": item})
+        LOG.info("Local: media saved camera=%s media=%s saved=%s", media["camera_id"], media_id, item["id"])
         return item
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -431,12 +480,17 @@ async def analyze_media(media_id: str):
     try:
         camera = s.config.camera(media["camera_id"])
         prompt = camera.prompt_override.strip() or s.config.analysis.prompt
+        LOG.info("Analysis: manual re-analysis started camera=%s event=%s media=%s", camera.id, media["event_id"], media_id)
         result = await asyncio.to_thread(analyzer.analyze_image, Path(media["path"]), s.config.analysis, prompt)
         s.db.update_media(media_id, analyzed=True, analysis_json=result)
         event = s.db.get_event(media["event_id"])
         aggregated = analyzer.aggregate([m["analysis"] for m in event["media"] if m.get("analysis")])
         s.db.update_event(media["event_id"], analysis_json=aggregated)
         await s.broadcast({"type": "analysis_update", "event_id": media["event_id"], "media_id": media_id, "analysis": result})
+        if result.get("error"):
+            LOG.warning("Analysis: manual re-analysis failed camera=%s media=%s error=%s", camera.id, media_id, result["error"])
+        else:
+            LOG.info("Analysis: manual re-analysis complete camera=%s media=%s detections=%s", camera.id, media_id, _analysis_summary(result))
         return result
     except KeyError as exc:
         raise HTTPException(404, "camera no longer configured") from exc
@@ -468,9 +522,14 @@ async def chat_media(media_id: str, payload: dict[str, Any] = Body(...)):
         raise HTTPException(403, "image chat is disabled")
     if not prompt or len(prompt) > 4000:
         raise HTTPException(422, "prompt must contain 1-4000 characters")
+    LOG.info("Chat: analysis started camera=%s event=%s media=%s", media["camera_id"], media["event_id"], media_id)
     result = await asyncio.to_thread(
         analyzer.analyze_image, Path(media["path"]), s.config.analysis, analyzer.with_reasoning(prompt)
     )
+    if result.get("error"):
+        LOG.warning("Chat: analysis failed camera=%s media=%s error=%s", media["camera_id"], media_id, result["error"])
+    else:
+        LOG.info("Chat: analysis complete camera=%s media=%s detections=%s", media["camera_id"], media_id, _analysis_summary(result))
     return result
 
 
@@ -507,9 +566,12 @@ async def logs():
 @app.post("/api/alerts/test")
 async def test_alert():
     try:
+        LOG.info("Alert: test email requested")
         await asyncio.to_thread(state().capture.alerts.test_email)
+        LOG.info("Alert: test email sent")
         return {"ok": True}
     except Exception as exc:
+        LOG.warning("Alert: test email failed error=%s", exc)
         raise HTTPException(502, str(exc)) from exc
 
 
@@ -556,3 +618,13 @@ def _redact(value: str) -> str:
     value = re.sub(r"([?&]token=)[^&\s]+", r"\1<redacted>", value, flags=re.I)
     value = re.sub(r"(?i)(password|token|api[_-]?key)([\"']?\s*[:=]\s*[\"']?)[^\s,}\"']+", r"\1\2<redacted>", value)
     return value
+
+
+def _analysis_summary(result: dict[str, Any]) -> str:
+    values = []
+    for detection in result.get("detections", []) or []:
+        label = str(detection.get("label", "")).strip()
+        name = str(detection.get("name", "")).strip()
+        if label:
+            values.append(f"{label}/{name}" if name else label)
+    return ", ".join(values) or "none"

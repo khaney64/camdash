@@ -35,6 +35,8 @@ analysis:
     confidence 0-10.
   max_tokens: 1024
   thinking_budget: 2048
+  temperature: 0.1
+  chat_enabled: false
   alerts_enabled: false
   alert_cooldown_minutes: 30
   alert_rules_enabled: {}

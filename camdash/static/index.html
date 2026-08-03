@@ -98,10 +98,17 @@
           <div class="field-grid">
             <label class="switch"><input name="enabled" type="checkbox"><span>Enable analysis</span></label>
             <label>Backend<select name="backend"><option value="llm">Local LLM</option><option value="anthropic">Anthropic</option></select></label>
-            <label>Local LLM URL<input name="llm_url" placeholder="http://llmserver:8080/v1"></label>
-            <label>Local model<input name="llm_model"></label>
+            <label class="analysis-local-field">Local LLM URL<input name="llm_url" placeholder="http://llmserver:8080/v1"></label>
+            <label class="analysis-local-field">Local model<input name="llm_model"></label>
+            <label class="analysis-anthropic-field hidden">Anthropic model<input name="anthropic_model"></label>
+            <div class="analysis-anthropic-field hidden"><span class="field-title">API key</span><span id="anthropic-key-status" class="muted"></span></div>
             <label class="wide-field">Default prompt<textarea name="prompt" rows="6"></textarea></label>
+            <label>Max Tokens<input name="max_tokens" type="number" min="100" max="4096"></label>
+            <label>Thinking Budget <span class="muted hint">0 = off</span><input name="thinking_budget" type="number" min="0" max="32768" step="256"></label>
+            <label class="wide-field analysis-temperature">Temperature <span id="analysis-temperature-value" class="muted">0.10</span><input name="temperature" type="range" min="0" max="1" step="0.05"></label>
+            <label class="switch"><input name="chat_enabled" type="checkbox"><span>Enable image chat</span></label>
           </div>
+          <div class="analysis-actions"><span id="analysis-settings-message" class="message"></span><button type="button" class="button primary" id="save-analysis">Save analysis</button></div>
         </form>
         <form id="alert-settings" class="panel settings-card wide">
           <h2>Alert settings</h2>

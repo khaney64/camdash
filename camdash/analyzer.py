@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +36,39 @@ def analyze_image(path: Path, cfg: AnalysisConfig, prompt: str | None = None) ->
     effective_prompt = prompt or cfg.prompt
     encoded = base64.b64encode(path.read_bytes()).decode()
     try:
-        if cfg.backend == "anthropic":
-            return _anthropic(encoded, cfg, effective_prompt)
-        return _local(encoded, cfg, effective_prompt)
+        result = _call(encoded, cfg, effective_prompt)
+        if not result.get("description") and cfg.thinking_budget > 0:
+            budget = cfg.thinking_budget * 2
+            LOG.warning("analysis empty response; retrying with thinking_budget=%d", budget)
+            result = _call(encoded, replace(cfg, thinking_budget=budget), effective_prompt)
+            if result.get("description"):
+                LOG.info("analysis retry succeeded thinking_budget=%d", budget)
+            else:
+                LOG.warning("analysis retry also returned empty thinking_budget=%d", budget)
+        detections = result.get("detections") or []
+        if (
+            not result.get("error") and detections
+            and all(float(item.get("confidence", 0)) <= 3 for item in detections)
+            and cfg.thinking_budget > 0
+        ):
+            budget = cfg.thinking_budget * 2
+            LOG.warning("analysis low-confidence response; retrying with thinking_budget=%d", budget)
+            result = _call(encoded, replace(cfg, thinking_budget=budget), effective_prompt)
+            retry_confidences = [float(item.get("confidence", 0)) for item in result.get("detections") or []]
+            if any(value > 3 for value in retry_confidences):
+                LOG.info("analysis confidence retry succeeded thinking_budget=%d", budget)
+            else:
+                LOG.warning("analysis confidence retry still low thinking_budget=%d", budget)
+        return result
     except Exception as exc:
         LOG.exception("analysis failed")
         return {"description": "", "detections": [], "error": str(exc), "engine": cfg.backend}
+
+
+def _call(image: str, cfg: AnalysisConfig, prompt: str) -> dict[str, Any]:
+    if cfg.backend == "anthropic":
+        return _anthropic(image, cfg, prompt)
+    return _local(image, cfg, prompt)
 
 
 def _local(image: str, cfg: AnalysisConfig, prompt: str) -> dict[str, Any]:
@@ -53,7 +81,7 @@ def _local(image: str, cfg: AnalysisConfig, prompt: str) -> dict[str, Any]:
             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image}},
         ]}],
         "max_tokens": cfg.max_tokens + max(0, cfg.thinking_budget),
-        "temperature": 0.1,
+        "temperature": cfg.temperature,
     }
     if cfg.thinking_budget:
         payload["chat_template_kwargs"] = {"enable_thinking": True, "thinking_budget": cfg.thinking_budget}

@@ -76,7 +76,8 @@ async function openEvent(id) {
 function detailMedia(media) {
   const body=media.path?(media.kind==='video'?`<video controls playsinline src="/api/media/${media.id}/file"></video>`:`<img src="/api/media/${media.id}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
   const overlay=media.kind==='snapshot'?detectionOverlay(media.analysis?.detections||[]):'';
-  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`<button class="icon-action icon-chat" data-chat-media="${media.id}" title="Chat about image" aria-label="Chat about image">💬</button><button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
+  const chatButton=S.settings?.analysis?.chat_enabled?`<button class="icon-action icon-chat" data-chat-media="${media.id}" title="Chat about image" aria-label="Chat about image">💬</button>`:'';
+  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`${chatButton}<button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
 }
 
 async function loadSaved() {
@@ -112,11 +113,17 @@ async function ptz(command,coarse=false){if(!S.liveCamera)return;try{await api(`
 async function manualCapture(kind){const id=$('live-camera').value;if(!id)return;try{await api(`/api/cameras/${id}/capture/${kind}`,{method:'POST'});toast(kind==='clip'?'Recording started':'Snapshot started');}catch(e){toast(e.message,true)}}
 
 async function loadSettings() {
-  try { S.settings=await api('/api/settings'); S.cameras=S.settings.cameras; fillForm('capture-settings',S.settings.capture); fillForm('retention-settings',{...S.settings.retention,mqtt_host:S.settings.mqtt.host,mqtt_port:S.settings.mqtt.port,mqtt_username:S.settings.mqtt.username}); fillForm('analysis-settings',S.settings.analysis); renderAlertSettings(); renderCameraSettings(); }
+  try { S.settings=await api('/api/settings'); S.cameras=S.settings.cameras; fillForm('capture-settings',S.settings.capture); fillForm('retention-settings',{...S.settings.retention,mqtt_host:S.settings.mqtt.host,mqtt_port:S.settings.mqtt.port,mqtt_username:S.settings.mqtt.username}); fillForm('analysis-settings',S.settings.analysis); renderAnalysisSettings(); renderAlertSettings(); renderCameraSettings(); }
   catch(e){toast(e.message,true)}
 }
 function fillForm(id,data){const form=$(id);for(const [key,value] of Object.entries(data)){const input=form.elements.namedItem(key);if(!input)continue;if(input.type==='checkbox')input.checked=Boolean(value);else input.value=value??'';}}
-function formData(id){const result={};for(const el of $(id).elements){if(!el.name)continue;let value=el.type==='checkbox'?el.checked:el.value;if(el.type==='number')value=Number(value);result[el.name]=value;}return result;}
+function formData(id){const result={};for(const el of $(id).elements){if(!el.name)continue;let value=el.type==='checkbox'?el.checked:el.value;if(el.type==='number'||el.type==='range')value=Number(value);result[el.name]=value;}return result;}
+function renderAnalysisSettings(){
+  const analysis=S.settings.analysis,anthropic=analysis.backend==='anthropic';
+  document.querySelectorAll('.analysis-local-field').forEach(el=>el.classList.toggle('hidden',anthropic));document.querySelectorAll('.analysis-anthropic-field').forEach(el=>el.classList.toggle('hidden',!anthropic));
+  $('anthropic-key-status').textContent=analysis.anthropic_key_set?'✓ API key configured':'✗ API key not configured on server';
+  $('analysis-temperature-value').textContent=Number(analysis.temperature??0.1).toFixed(2);
+}
 function renderAlertSettings(){
   const analysis=S.settings.analysis;fillForm('alert-settings',analysis);
   const status=$('alert-email-status');status.textContent=analysis.alert_email_configured?`Configured: ${analysis.alert_email}`:'Not configured on server';status.classList.toggle('success',analysis.alert_email_configured);
@@ -146,7 +153,7 @@ async function saveSettings(){
   const capture=formData('capture-settings'),retentionRaw=formData('retention-settings'),analysis={...formData('analysis-settings'),...collectAlertSettings()};
   const mqtt={...S.settings.mqtt,host:retentionRaw.mqtt_host,port:retentionRaw.mqtt_port,username:retentionRaw.mqtt_username};if(retentionRaw.mqtt_password)mqtt.password=retentionRaw.mqtt_password;
   const retention={days:retentionRaw.days,max_gb:retentionRaw.max_gb,interval_minutes:S.settings.retention.interval_minutes};
-  try{S.settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({timezone:S.settings.timezone,capture,retention,mqtt,analysis,cameras:collectCameras()})});$('settings-message').textContent='Settings saved and event sources restarted.';$('settings-message').className='message success';$('alert-settings-message').textContent='Alert settings saved';await loadCameras();renderAlertSettings();renderCameraSettings();}
+  try{S.settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({timezone:S.settings.timezone,capture,retention,mqtt,analysis,cameras:collectCameras()})});$('settings-message').textContent='Settings saved and event sources restarted.';$('settings-message').className='message success';$('analysis-settings-message').textContent='Analysis settings saved';$('alert-settings-message').textContent='Alert settings saved';await loadCameras();renderAnalysisSettings();renderAlertSettings();renderCameraSettings();const eventId=$('event-detail').dataset.eventId;if(eventId&&$('event-dialog').open)await openEvent(eventId);}
   catch(e){$('settings-message').textContent=e.message;$('settings-message').className='message error';}
 }
 async function discoverCameras(){const out=$('discovery-results');out.textContent='Scanning…';try{const data=await api('/api/cameras/discover',{method:'POST'});out.textContent=data.devices.length?data.devices.map(d=>`${d.host} ${d.scopes.join(' ')}`).join('\n'):'No ONVIF devices answered.';}catch(e){out.textContent=e.message;out.className='message error';}}
@@ -186,7 +193,8 @@ function bind() {
   $('live-stage').onclick=e=>{if(!S.liveCamera||!S.livePtz||!e.target.closest('.live-media'))return;$('ptz-pad').classList.toggle('hidden');};
   document.addEventListener('click',e=>{if(!e.target.closest('#ptz-pad')&&!e.target.closest('.live-media'))$('ptz-pad').classList.add('hidden');});
   let clickTimer;document.querySelectorAll('#ptz-pad button').forEach(b=>{b.onclick=e=>{if(e.detail===1)clickTimer=setTimeout(()=>ptz(b.dataset.command,false),210)};b.ondblclick=()=>{clearTimeout(clickTimer);ptz(b.classList.contains('ptz-center')?'home':b.dataset.command,true)}});
-  $('save-settings').onclick=saveSettings;$('save-alerts').onclick=saveSettings;$('discover-cameras').onclick=discoverCameras;$('add-camera').onclick=addCamera;$('test-alert').onclick=async()=>{const status=$('test-alert-status');status.textContent='Sending…';try{await api('/api/alerts/test',{method:'POST'});status.textContent='Test email sent';toast('Test email sent')}catch(e){status.textContent=e.message;toast(e.message,true)}};
+  $('save-settings').onclick=saveSettings;$('save-analysis').onclick=saveSettings;$('save-alerts').onclick=saveSettings;$('discover-cameras').onclick=discoverCameras;$('add-camera').onclick=addCamera;$('test-alert').onclick=async()=>{const status=$('test-alert-status');status.textContent='Sending…';try{await api('/api/alerts/test',{method:'POST'});status.textContent='Test email sent';toast('Test email sent')}catch(e){status.textContent=e.message;toast(e.message,true)}};
+  $('analysis-settings').elements.namedItem('backend').onchange=()=>{S.settings.analysis.backend=$('analysis-settings').elements.namedItem('backend').value;renderAnalysisSettings()};$('analysis-settings').elements.namedItem('temperature').oninput=e=>$('analysis-temperature-value').textContent=Number(e.target.value).toFixed(2);
   $('camera-settings').onclick=e=>{const remove=e.target.closest('[data-remove-camera]');if(remove){S.cameras.splice(Number(remove.dataset.removeCamera),1);renderCameraSettings();return}const probe=e.target.closest('[data-probe-camera]');if(probe)probeCamera(probe.dataset.probeCamera);const sd=e.target.closest('[data-sd-camera]');if(sd)checkSd(sd.dataset.sdCamera);};
   $('refresh-logs').onclick=loadLogs;
   $('chat-dialog').onclick=e=>{if(e.target===$('chat-dialog'))closeChatDialog()};$('chat-dialog').querySelector('.chat-close-btn').onclick=closeChatDialog;$('chat-submit-btn').onclick=submitChat;$('chat-prompt-input').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')submitChat()};
@@ -195,5 +203,5 @@ function bind() {
 function debounce(fn,ms){let t;return()=>{clearTimeout(t);t=setTimeout(fn,ms)}}
 function connectEvents(){if(S.evt)S.evt.close();S.evt=new EventSource('/api/updates');S.evt.onmessage=e=>{const data=JSON.parse(e.data);if(data.type.startsWith('event_')||data.type==='capture_progress'||data.type==='analysis_update'){if(S.tab==='gallery')loadEvents();}if(data.type==='saved'&&S.tab==='local')loadSaved();};S.evt.onerror=()=>setTimeout(connectEvents,3000);}
 
-async function init(){initNav();bind();showTab('gallery');await loadCameras();await Promise.all([loadStatus(),loadEvents()]);connectEvents();setInterval(loadStatus,10000);setInterval(()=>{if(S.tab==='logs')loadLogs()},3000);}
+async function init(){initNav();bind();showTab('gallery');await loadSettings();await Promise.all([loadStatus(),loadEvents()]);connectEvents();setInterval(loadStatus,10000);setInterval(()=>{if(S.tab==='logs')loadLogs()},3000);}
 document.addEventListener('DOMContentLoaded',init);

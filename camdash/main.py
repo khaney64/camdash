@@ -218,6 +218,7 @@ def settings_payload(config: AppConfig, config_path: Path) -> dict[str, Any]:
     password = os.environ.get("CAMDASH_ALERT_SMTP_PASSWORD", "")
     rules = AlertEngine(config_path.parent / "alerts.yaml").rules()
     payload["analysis"].update({
+        "anthropic_key_set": bool(os.environ.get("ANTHROPIC_API_KEY", "")),
         "alert_email": email,
         "alert_email_configured": bool(email and password),
         "alert_rules": [str(rule.get("name", "unnamed")) for rule in rules],
@@ -447,6 +448,8 @@ async def chat_media_prompt(media_id: str):
     media = s.db.get_media(media_id)
     if not media or media.get("kind") != "snapshot" or not media.get("path"):
         raise HTTPException(404, "snapshot not found")
+    if not s.config.analysis.chat_enabled:
+        raise HTTPException(403, "image chat is disabled")
     try:
         camera = s.config.camera(media["camera_id"])
     except KeyError as exc:
@@ -456,14 +459,17 @@ async def chat_media_prompt(media_id: str):
 
 @app.post("/api/media/{media_id}/chat")
 async def chat_media(media_id: str, payload: dict[str, Any] = Body(...)):
-    media = state().db.get_media(media_id)
+    s = state()
+    media = s.db.get_media(media_id)
     prompt = str(payload.get("prompt", "")).strip()
     if not media or media.get("kind") != "snapshot" or not media.get("path"):
         raise HTTPException(404, "snapshot not found")
+    if not s.config.analysis.chat_enabled:
+        raise HTTPException(403, "image chat is disabled")
     if not prompt or len(prompt) > 4000:
         raise HTTPException(422, "prompt must contain 1-4000 characters")
     result = await asyncio.to_thread(
-        analyzer.analyze_image, Path(media["path"]), state().config.analysis, analyzer.with_reasoning(prompt)
+        analyzer.analyze_image, Path(media["path"]), s.config.analysis, analyzer.with_reasoning(prompt)
     )
     return result
 

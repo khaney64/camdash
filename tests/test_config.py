@@ -53,3 +53,22 @@ def test_alert_settings_round_trip_and_person_modes_are_exclusive(tmp_path: Path
     loaded.analysis.alert_rules_enabled["Person"] = True
     with pytest.raises(ValueError, match="cannot both"):
         save_config(loaded, path)
+
+
+def test_analysis_generation_settings_round_trip_and_validate(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.analysis.max_tokens = 4096
+    cfg.analysis.thinking_budget = 8192
+    cfg.analysis.temperature = 0.8
+    cfg.analysis.chat_enabled = True
+    save_config(cfg, path)
+    loaded, _ = load_config(path)
+    assert loaded.analysis.max_tokens == 4096
+    assert loaded.analysis.thinking_budget == 8192
+    assert loaded.analysis.temperature == 0.8
+    assert loaded.analysis.chat_enabled is True
+
+    loaded.analysis.temperature = 1.1
+    with pytest.raises(ValueError, match="temperature"):
+        save_config(loaded, path)

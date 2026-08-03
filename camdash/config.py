@@ -56,6 +56,8 @@ class AnalysisConfig:
     )
     max_tokens: int = 1024
     thinking_budget: int = 2048
+    temperature: float = 0.1
+    chat_enabled: bool = False
     alerts_enabled: bool = False
     alert_cooldown_minutes: int = 30
     alert_rules_enabled: dict[str, bool] = field(default_factory=dict)
@@ -158,6 +160,14 @@ def _validate(cfg: AppConfig) -> None:
         raise ValueError("invalid MQTT port")
     if not 0 <= cfg.analysis.alert_cooldown_minutes <= 1440:
         raise ValueError("alert cooldown must be between 0 and 1440 minutes")
+    if cfg.analysis.backend not in {"llm", "anthropic"}:
+        raise ValueError("analysis backend must be llm or anthropic")
+    if not 100 <= cfg.analysis.max_tokens <= 4096:
+        raise ValueError("analysis max tokens must be between 100 and 4096")
+    if not 0 <= cfg.analysis.thinking_budget <= 32768:
+        raise ValueError("analysis thinking budget must be between 0 and 32768")
+    if not 0 <= cfg.analysis.temperature <= 1:
+        raise ValueError("analysis temperature must be between 0 and 1")
     person_enabled = next(
         (enabled for name, enabled in cfg.analysis.alert_rules_enabled.items() if name.lower() == "person"),
         True,

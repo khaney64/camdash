@@ -77,6 +77,7 @@ def test_chat_uses_camera_prompt_and_appends_reasoning(tmp_path: Path, monkeypat
     cfg.mqtt.host = "127.0.0.1"
     cfg.mqtt.port = 9
     cfg.analysis.enabled = True
+    cfg.analysis.chat_enabled = True
     save_config(cfg, config_path)
     monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
 

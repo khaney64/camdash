@@ -31,6 +31,8 @@ The application requires `ffmpeg` and `ffprobe` for RTSP recording and HLS.
 
 The Settings page exposes the Gardepro-style alert controls: global enablement, configured email status and test delivery, per-rule cooldown and switches, plus optional removal of newly analyzed person-only events. Person alerts and person-only removal are mutually exclusive. Rule definitions and SMTP credentials remain server-local.
 
+Analysis settings expose backend-specific model fields, prompt, maximum output tokens, thinking budget (zero disables thinking), temperature, and image chat. Empty responses and results whose detections all have confidence 3 or lower are retried once with twice the configured thinking budget; the configured value is not changed.
+
 Camera passwords, HTTP tokens, broker passwords, private addresses, and personal notification settings must never be committed. The Settings API masks stored secrets and preserves them when a password field is left blank.
 
 ## Deployment

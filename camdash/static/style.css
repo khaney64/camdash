@@ -94,6 +94,7 @@ textarea { resize: vertical; }
 .alert-rule .nested { margin: .75rem 0 0 2rem; color: var(--muted); }
 .alert-actions { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; padding-top: 1rem; }
 #alert-email-status.success { color: var(--success); }
+.analysis-temperature input { width: 100%; }.analysis-actions { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; padding-top: 1rem; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 13px; }
 .wide-field { grid-column: 1/-1; }
 .camera-form { padding: 18px; margin-bottom: 14px; }

@@ -1,4 +1,8 @@
+from pathlib import Path
+
+import camdash.analyzer as analyzer
 from camdash.analyzer import aggregate, local_chat_url, parse_result, with_reasoning
+from camdash.config import AnalysisConfig
 
 
 def test_parse_json_and_aggregate_highest_confidence():
@@ -27,3 +31,56 @@ def test_local_chat_url_accepts_server_v1_or_full_endpoint():
 
 def test_chat_prompt_requests_reasoning():
     assert with_reasoning("What is here?  ") == "What is here?\nInclude your reasoning."
+
+
+def test_empty_analysis_retries_with_double_thinking_budget(tmp_path: Path, monkeypatch):
+    image = tmp_path / "image.jpg"
+    image.write_bytes(b"image")
+    cfg = AnalysisConfig(enabled=True, thinking_budget=2048)
+    budgets = []
+    results = iter([
+        {"description": "", "detections": []},
+        {"description": "A cat", "detections": [{"label": "cat", "confidence": 8}]},
+    ])
+    monkeypatch.setattr(analyzer, "_call", lambda encoded, attempt, prompt: (budgets.append(attempt.thinking_budget) or next(results)))
+
+    result = analyzer.analyze_image(image, cfg)
+
+    assert budgets == [2048, 4096]
+    assert result["description"] == "A cat"
+
+
+def test_low_confidence_analysis_retries_with_double_thinking_budget(tmp_path: Path, monkeypatch):
+    image = tmp_path / "image.jpg"
+    image.write_bytes(b"image")
+    cfg = AnalysisConfig(enabled=True, thinking_budget=1024)
+    budgets = []
+    results = iter([
+        {"description": "Maybe a cat", "detections": [{"label": "cat", "confidence": 3}]},
+        {"description": "A cat", "detections": [{"label": "cat", "confidence": 7}]},
+    ])
+    monkeypatch.setattr(analyzer, "_call", lambda encoded, attempt, prompt: (budgets.append(attempt.thinking_budget) or next(results)))
+
+    result = analyzer.analyze_image(image, cfg)
+
+    assert budgets == [1024, 2048]
+    assert result["detections"][0]["confidence"] == 7
+
+
+def test_local_payload_uses_adjustable_generation_values(monkeypatch):
+    cfg = AnalysisConfig(llm_url="http://llm", llm_model="vision", max_tokens=800,
+                         thinking_budget=2048, temperature=0.8)
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "Answer"}}]}
+
+    monkeypatch.setattr(analyzer.requests, "post", lambda url, **kwargs: (captured.update(kwargs["json"]) or Response()))
+    analyzer._local("encoded", cfg, "prompt")
+    assert captured["max_tokens"] == 2848
+    assert captured["temperature"] == 0.8
+    assert captured["chat_template_kwargs"]["thinking_budget"] == 2048

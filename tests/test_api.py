@@ -1,8 +1,26 @@
+import asyncio
 from pathlib import Path
+from queue import Empty
 
 from fastapi.testclient import TestClient
 
 from camdash.config import AppConfig, CameraConfig, save_config
+
+
+def test_mjpeg_viewer_queue_wait_is_bounded():
+    calls = []
+
+    class FrameQueue:
+        def get(self, *, timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise Empty
+            return b"frame"
+
+    from camdash.main import MJPEG_QUEUE_WAIT_SECONDS, _next_mjpeg_frame
+
+    assert asyncio.run(_next_mjpeg_frame(FrameQueue())) == b"frame"
+    assert calls == [MJPEG_QUEUE_WAIT_SECONDS, MJPEG_QUEUE_WAIT_SECONDS]
 
 
 def test_frontend_initializes_camera_dropdowns():

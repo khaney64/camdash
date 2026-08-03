@@ -17,6 +17,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
@@ -35,6 +36,7 @@ from .mjpeg import MjpegRelay, multipart_frame
 
 
 PTZ_MOTION_SUPPRESSION_SECONDS = 5.0
+MJPEG_QUEUE_WAIT_SECONDS = 1.0
 
 
 class RingHandler(logging.Handler):
@@ -402,6 +404,14 @@ async def live_info(camera_id: str, hd: bool = False):
         raise HTTPException(502, str(exc)) from exc
 
 
+async def _next_mjpeg_frame(frame_queue):
+    while True:
+        try:
+            return await asyncio.to_thread(frame_queue.get, timeout=MJPEG_QUEUE_WAIT_SECONDS)
+        except Empty:
+            continue
+
+
 @app.get("/api/cameras/{camera_id}/live.mjpg")
 async def live_mjpeg(camera_id: str, hd: bool = False):
     try:
@@ -423,7 +433,7 @@ async def live_mjpeg(camera_id: str, hd: bool = False):
         first = True
         try:
             while True:
-                frame = await asyncio.to_thread(queue.get)
+                frame = await _next_mjpeg_frame(queue)
                 if first:
                     LOG.debug("MJPEG viewer forwarding first frame camera=%s hd=%s size=%s", camera_id, hd, len(frame))
                     first = False

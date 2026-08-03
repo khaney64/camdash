@@ -58,6 +58,18 @@ jct /etc/prudynt.json set recorder.limit 24
 jct /etc/prudynt.json set recorder.min_free_mb 4096
 jct /etc/prudynt.json set recorder.cleanup_enabled true
 
+# Zero creates a zero-sized IVS frame/ROI. Prudynt uses 16384 as its sentinel
+# for resolving these values from the selected encoder stream during init.
+jct /etc/prudynt.json set motion.frame_width 16384
+jct /etc/prudynt.json set motion.frame_height 16384
+jct /etc/prudynt.json set motion.roi_1_x 16384
+jct /etc/prudynt.json set motion.roi_1_y 16384
+
+# Prudynt keeps motion settings in memory, and its geometry hot-reload stops
+# IVS without reliably restarting it. Restart once to load the complete saved
+# configuration and reinitialize motion detection with the corrected geometry.
+/etc/init.d/S31prudynt restart
+
 kill -HUP "$(cat /var/run/recordmgr.pid 2>/dev/null)" 2>/dev/null || true
 echo "Configured $camera_id; backups: /etc/send2.json.camdash-$stamp and /etc/prudynt.json.camdash-$stamp"
 REMOTE

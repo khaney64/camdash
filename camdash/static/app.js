@@ -203,5 +203,5 @@ function bind() {
 function debounce(fn,ms){let t;return()=>{clearTimeout(t);t=setTimeout(fn,ms)}}
 function connectEvents(){if(S.evt)S.evt.close();S.evt=new EventSource('/api/updates');S.evt.onmessage=e=>{const data=JSON.parse(e.data);if(data.type.startsWith('event_')||data.type==='capture_progress'||data.type==='analysis_update'){if(S.tab==='gallery')loadEvents();}if(data.type==='saved'&&S.tab==='local')loadSaved();};S.evt.onerror=()=>setTimeout(connectEvents,3000);}
 
-async function init(){initNav();bind();showTab('gallery');await loadSettings();await Promise.all([loadStatus(),loadEvents()]);connectEvents();setInterval(loadStatus,10000);setInterval(()=>{if(S.tab==='logs')loadLogs()},3000);}
+async function init(){initNav();bind();showTab('gallery');await loadSettings();await loadCameras();await Promise.all([loadStatus(),loadEvents()]);connectEvents();setInterval(loadStatus,10000);setInterval(()=>{if(S.tab==='logs')loadLogs()},3000);}
 document.addEventListener('DOMContentLoaded',init);

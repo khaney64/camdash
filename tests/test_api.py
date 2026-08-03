@@ -5,6 +5,11 @@ from fastapi.testclient import TestClient
 from camdash.config import AppConfig, CameraConfig, save_config
 
 
+def test_frontend_initializes_camera_dropdowns():
+    source = (Path(__file__).parents[1] / "camdash" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "await loadSettings();await loadCameras();" in source
+
+
 def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     cfg = AppConfig(data_dir=str(tmp_path))

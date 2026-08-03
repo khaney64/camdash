@@ -185,7 +185,8 @@ class CaptureManager:
             "Capture: video recording started event=%s stream=%s duration_seconds=%d",
             event["id"], stream, duration,
         )
-        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp", "-i", rtsp_url,
+        command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
+                   "-use_wallclock_as_timestamps", "1", "-i", rtsp_url,
                    "-t", str(duration), "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart",
                    "-y", str(temporary)]
         error = ""

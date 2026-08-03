@@ -77,7 +77,10 @@ async def test_short_video_uses_actual_duration_and_fails(tmp_path: Path, monkey
     async def broadcast(_message):
         pass
 
+    commands = []
+
     async def fake_run(command, timeout):
+        commands.append(command)
         Path(command[-1]).write_bytes(b"video")
 
     async def fake_codec(_path):
@@ -98,3 +101,4 @@ async def test_short_video_uses_actual_duration_and_fails(tmp_path: Path, monkey
     assert database.row["duration_seconds"] == 2.0
     assert database.row["path"].endswith("clip.mp4")
     assert "requested 30s, actual 2.00s" in database.row["error"]
+    assert commands[0][commands[0].index("-use_wallclock_as_timestamps") + 1] == "1"

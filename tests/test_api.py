@@ -11,8 +11,11 @@ def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):
     cfg.mqtt.host = "127.0.0.1"
     cfg.mqtt.port = 9
     cfg.mqtt.password = "secret"
+    (tmp_path / "alerts.yaml").write_text("alerts:\n  - name: Cat\n    keywords: [cat]\n", encoding="utf-8")
     save_config(cfg, config_path)
     monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+    monkeypatch.setenv("CAMDASH_ALERT_EMAIL", "alerts@example.test")
+    monkeypatch.setenv("CAMDASH_ALERT_SMTP_PASSWORD", "private")
 
     from camdash.main import app
 
@@ -24,6 +27,9 @@ def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):
         settings = client.get("/api/settings").json()
         assert "password" not in settings["mqtt"]
         assert settings["mqtt"]["has_password"] is True
+        assert settings["analysis"]["alert_email"] == "alerts@example.test"
+        assert settings["analysis"]["alert_email_configured"] is True
+        assert settings["analysis"]["alert_rules"] == ["Cat"]
         events = client.get("/api/events").json()
         assert events == {"events": []}
 

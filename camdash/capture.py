@@ -99,9 +99,10 @@ class CaptureManager:
             errors.append(f"snapshots: {exc}")
             LOG.exception("snapshot capture failed camera=%s event=%s", camera.id, event_id)
 
+        remove_person_only = False
         if snapshots:
             try:
-                await self._analyze(event, camera, snapshots)
+                remove_person_only = await self._analyze(event, camera, snapshots)
             except Exception as exc:
                 errors.append(f"analysis: {exc}")
                 LOG.exception("analysis failed event=%s", event_id)
@@ -112,6 +113,15 @@ class CaptureManager:
             except Exception as exc:
                 errors.append(f"video: {exc}")
                 LOG.exception("video capture failed camera=%s event=%s", camera.id, event_id)
+
+        if remove_person_only:
+            current = self.db.get_event(event_id)
+            if current:
+                self.delete_event_files(current)
+                self.db.delete_event(event_id)
+            await self.broadcast({"type": "event_deleted", "event_id": event_id, "reason": "person_only"})
+            await asyncio.sleep(max(0, capture.cooldown_seconds))
+            return
 
         current = self.db.get_event(event_id)
         has_media = bool(current and current.get("media"))
@@ -174,7 +184,7 @@ class CaptureManager:
             raise CameraError(error)
         return row
 
-    async def _analyze(self, event: dict[str, Any], camera: CameraConfig, snapshots: list[dict[str, Any]]) -> None:
+    async def _analyze(self, event: dict[str, Any], camera: CameraConfig, snapshots: list[dict[str, Any]]) -> bool:
         cfg = self.config_getter()
         prompt = camera.prompt_override.strip() or cfg.analysis.prompt
         results = []
@@ -190,13 +200,23 @@ class CaptureManager:
         failures = [str(result["error"]) for result in results if result.get("error")]
         if results and len(failures) == len(results):
             raise RuntimeError(f"all {len(results)} image analyses failed: {failures[0]}")
+        labels = {
+            str(detection.get("label", "")).lower()
+            for detection in aggregate.get("detections", [])
+            if detection.get("label")
+        }
+        if cfg.analysis.remove_person_only_images and labels and labels <= {"person", "human", "legs"}:
+            LOG.info("removing person-only event camera=%s event=%s", camera.id, event["id"])
+            return True
         event_with_analysis = self.db.get_event(event["id"]) or event
         if cfg.analysis.alerts_enabled:
             first = next((Path(m["thumb_path"]) for m in snapshots if m.get("thumb_path")), None)
             alert = await asyncio.to_thread(self.alerts.evaluate, event_with_analysis, first,
-                                            cfg.analysis.alert_cooldown_minutes * 60)
+                                            cfg.analysis.alert_cooldown_minutes * 60,
+                                            cfg.analysis.alert_rules_enabled)
             self.db.update_event(event["id"], alert_json=alert)
             await self.broadcast({"type": "alert_update", "event_id": event["id"], "alert": alert})
+        return False
 
     def delete_event_files(self, event: dict[str, Any]) -> None:
         for media in event.get("media", []):

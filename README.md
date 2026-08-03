@@ -29,6 +29,8 @@ The application requires `ffmpeg` and `ffprobe` for RTSP recording and HLS.
 - Alert rules: `~/.camdash/alerts.yaml`.
 - Database and media: `~/.camdash/`.
 
+The Settings page exposes the Gardepro-style alert controls: global enablement, configured email status and test delivery, per-rule cooldown and switches, plus optional removal of newly analyzed person-only events. Person alerts and person-only removal are mutually exclusive. Rule definitions and SMTP credentials remain server-local.
+
 Camera passwords, HTTP tokens, broker passwords, private addresses, and personal notification settings must never be committed. The Settings API masks stored secrets and preserves them when a password field is left blank.
 
 ## Deployment
@@ -42,4 +44,3 @@ Camera passwords, HTTP tokens, broker passwords, private addresses, and personal
 7. Enter ONVIF credentials for non-Thingino cameras in Settings, run Probe, and enable the camera only after media and event services succeed.
 
 The dashboard binds to port 8081 by default. It has no application login and must remain on a trusted LAN.
-

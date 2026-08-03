@@ -37,6 +37,8 @@ analysis:
   thinking_budget: 2048
   alerts_enabled: false
   alert_cooldown_minutes: 30
+  alert_rules_enabled: {}
+  remove_person_only_images: false
 
 cameras:
   - id: patio-camera
@@ -68,4 +70,3 @@ cameras:
     sd_redundancy: false
     prompt_override: ""
     capture: {}
-

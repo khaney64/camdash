@@ -210,9 +210,22 @@ async def updates(request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
+def settings_payload(config: AppConfig) -> dict[str, Any]:
+    payload = public_config(config)
+    email = os.environ.get("CAMDASH_ALERT_EMAIL", "")
+    password = os.environ.get("CAMDASH_ALERT_SMTP_PASSWORD", "")
+    rules = AlertEngine(config.root / "alerts.yaml").rules()
+    payload["analysis"].update({
+        "alert_email": email,
+        "alert_email_configured": bool(email and password),
+        "alert_rules": [str(rule.get("name", "unnamed")) for rule in rules],
+    })
+    return payload
+
+
 @app.get("/api/settings")
 async def get_settings():
-    return public_config(state().config)
+    return settings_payload(state().config)
 
 
 @app.put("/api/settings")
@@ -225,7 +238,7 @@ async def put_settings(payload: dict[str, Any] = Body(...)):
         s.capture.alerts = AlertEngine(updated.root / "alerts.yaml")
         await s.restart_sources()
         await s.broadcast({"type": "settings_update"})
-        return public_config(updated)
+        return settings_payload(updated)
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
 

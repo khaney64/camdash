@@ -26,3 +26,41 @@ alerts:
 
     assert engine.evaluate(event("person"), None, 0)["triggered"] == ["person"]
     assert engine.evaluate(event(), None, 0)["triggered"] == ["other"]
+
+
+def test_disabled_rule_falls_through_to_catch_all(tmp_path: Path):
+    rules = tmp_path / "alerts.yaml"
+    rules.write_text("""
+alerts:
+  - name: Person
+    keywords: [person]
+    action: log
+  - name: Other
+    catch_all: true
+    action: log
+""", encoding="utf-8")
+    result = AlertEngine(rules).evaluate(event("person"), None, 0, {"Person": False})
+    assert result["triggered"] == ["Other"]
+
+
+def test_matching_email_rules_are_consolidated(tmp_path: Path, monkeypatch):
+    rules = tmp_path / "alerts.yaml"
+    rules.write_text("""
+alerts:
+  - name: Cat
+    keywords: [cat]
+    action: email
+  - name: Wildlife
+    keywords: [wildlife]
+    action: email
+""", encoding="utf-8")
+    engine = AlertEngine(rules)
+    value = event("cat")
+    value["analysis"]["description"] = "cat and wildlife"
+    calls = []
+    monkeypatch.setattr(engine, "_email", lambda alert_event, names, thumb: calls.append(names))
+
+    result = engine.evaluate(value, None, 0)
+
+    assert calls == [["Cat", "Wildlife"]]
+    assert result == {"triggered": ["Cat", "Wildlife"], "errors": []}

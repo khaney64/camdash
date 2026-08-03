@@ -112,11 +112,26 @@ async function ptz(command,coarse=false){if(!S.liveCamera)return;try{await api(`
 async function manualCapture(kind){const id=$('live-camera').value;if(!id)return;try{await api(`/api/cameras/${id}/capture/${kind}`,{method:'POST'});toast(kind==='clip'?'Recording started':'Snapshot started');}catch(e){toast(e.message,true)}}
 
 async function loadSettings() {
-  try { S.settings=await api('/api/settings'); S.cameras=S.settings.cameras; fillForm('capture-settings',S.settings.capture); fillForm('retention-settings',{...S.settings.retention,mqtt_host:S.settings.mqtt.host,mqtt_port:S.settings.mqtt.port,mqtt_username:S.settings.mqtt.username}); fillForm('analysis-settings',S.settings.analysis); renderCameraSettings(); }
+  try { S.settings=await api('/api/settings'); S.cameras=S.settings.cameras; fillForm('capture-settings',S.settings.capture); fillForm('retention-settings',{...S.settings.retention,mqtt_host:S.settings.mqtt.host,mqtt_port:S.settings.mqtt.port,mqtt_username:S.settings.mqtt.username}); fillForm('analysis-settings',S.settings.analysis); renderAlertSettings(); renderCameraSettings(); }
   catch(e){toast(e.message,true)}
 }
 function fillForm(id,data){const form=$(id);for(const [key,value] of Object.entries(data)){const input=form.elements.namedItem(key);if(!input)continue;if(input.type==='checkbox')input.checked=Boolean(value);else input.value=value??'';}}
 function formData(id){const result={};for(const el of $(id).elements){if(!el.name)continue;let value=el.type==='checkbox'?el.checked:el.value;if(el.type==='number')value=Number(value);result[el.name]=value;}return result;}
+function renderAlertSettings(){
+  const analysis=S.settings.analysis;fillForm('alert-settings',analysis);
+  const status=$('alert-email-status');status.textContent=analysis.alert_email_configured?`Configured: ${analysis.alert_email}`:'Not configured on server';status.classList.toggle('success',analysis.alert_email_configured);
+  $('test-alert').disabled=!analysis.alert_email_configured;
+  const enabled=analysis.alert_rules_enabled||{};
+  $('alert-rule-toggles').innerHTML=(analysis.alert_rules||[]).map(name=>{const checked=enabled[name]!==false;const person=name.toLowerCase()==='person';return `<div class="alert-rule${person?' alert-rule-person':''}"><label class="switch"><input type="checkbox" data-alert-rule="${esc(name)}" ${checked?'checked':''}><span>${esc(name)} alerts</span></label>${person?'<label class="switch nested"><input name="remove_person_only_images" type="checkbox"><span>Remove new Person only images</span></label>':''}</div>`}).join('')||'<p class="muted">No alert rules configured. Add rules to ~/.camdash/alerts.yaml.</p>';
+  const remove=$('alert-settings').elements.namedItem('remove_person_only_images');if(remove)remove.checked=Boolean(analysis.remove_person_only_images);
+  const person=[...document.querySelectorAll('[data-alert-rule]')].find(input=>input.dataset.alertRule.toLowerCase()==='person');
+  if(person&&remove){person.onchange=()=>{if(person.checked)remove.checked=false};remove.onchange=()=>{if(remove.checked)person.checked=false};}
+}
+function collectAlertSettings(){
+  const values=formData('alert-settings'),rules={...(S.settings.analysis.alert_rules_enabled||{})};
+  document.querySelectorAll('[data-alert-rule]').forEach(input=>{rules[input.dataset.alertRule]=input.checked});
+  return {...values,alert_rules_enabled:rules};
+}
 function renderCameraSettings(){
   $('camera-settings').innerHTML=S.cameras.map((c,i)=>`<form class="camera-form panel" data-index="${i}"><div class="camera-form-head"><h3>${esc(c.name||'New camera')}</h3><button type="button" class="button danger" data-remove-camera="${i}">Remove</button></div><div class="field-grid">
     ${field('id','Camera ID',c.id)}${field('name','Display name',c.name)}${field('host','Host or IP',c.host)}<label>Adapter<select name="adapter"><option value="thingino" ${c.adapter==='thingino'?'selected':''}>Thingino</option><option value="onvif" ${c.adapter==='onvif'?'selected':''}>ONVIF</option></select></label>
@@ -128,10 +143,10 @@ function renderCameraSettings(){
 function field(name,label,value,type='text',placeholder=''){if(type==='textarea')return`<label class="wide-field">${label}<textarea name="${name}" rows="4">${esc(value)}</textarea></label>`;return`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}"></label>`;}
 function collectCameras(){return [...document.querySelectorAll('.camera-form')].map(form=>{const prior=S.cameras[Number(form.dataset.index)]||{};const result={...prior};for(const el of form.elements){if(!el.name)continue;let value=el.type==='checkbox'?el.checked:el.value;if(el.type==='number')value=Number(value);if((el.name==='password'||el.name==='token')&&!value)continue;result[el.name]=value;}return result;});}
 async function saveSettings(){
-  const capture=formData('capture-settings'),retentionRaw=formData('retention-settings'),analysis=formData('analysis-settings');
+  const capture=formData('capture-settings'),retentionRaw=formData('retention-settings'),analysis={...formData('analysis-settings'),...collectAlertSettings()};
   const mqtt={...S.settings.mqtt,host:retentionRaw.mqtt_host,port:retentionRaw.mqtt_port,username:retentionRaw.mqtt_username};if(retentionRaw.mqtt_password)mqtt.password=retentionRaw.mqtt_password;
   const retention={days:retentionRaw.days,max_gb:retentionRaw.max_gb,interval_minutes:S.settings.retention.interval_minutes};
-  try{S.settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({timezone:S.settings.timezone,capture,retention,mqtt,analysis,cameras:collectCameras()})});$('settings-message').textContent='Settings saved and event sources restarted.';$('settings-message').className='message success';await loadCameras();renderCameraSettings();}
+  try{S.settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({timezone:S.settings.timezone,capture,retention,mqtt,analysis,cameras:collectCameras()})});$('settings-message').textContent='Settings saved and event sources restarted.';$('settings-message').className='message success';$('alert-settings-message').textContent='Alert settings saved';await loadCameras();renderAlertSettings();renderCameraSettings();}
   catch(e){$('settings-message').textContent=e.message;$('settings-message').className='message error';}
 }
 async function discoverCameras(){const out=$('discovery-results');out.textContent='Scanning…';try{const data=await api('/api/cameras/discover',{method:'POST'});out.textContent=data.devices.length?data.devices.map(d=>`${d.host} ${d.scopes.join(' ')}`).join('\n'):'No ONVIF devices answered.';}catch(e){out.textContent=e.message;out.className='message error';}}
@@ -149,7 +164,7 @@ function bind() {
   $('live-stage').onclick=e=>{if(!S.liveCamera||!S.livePtz||!e.target.closest('.live-media'))return;$('ptz-pad').classList.toggle('hidden');};
   document.addEventListener('click',e=>{if(!e.target.closest('#ptz-pad')&&!e.target.closest('.live-media'))$('ptz-pad').classList.add('hidden');});
   let clickTimer;document.querySelectorAll('#ptz-pad button').forEach(b=>{b.onclick=e=>{if(e.detail===1)clickTimer=setTimeout(()=>ptz(b.dataset.command,false),210)};b.ondblclick=()=>{clearTimeout(clickTimer);ptz(b.classList.contains('ptz-center')?'home':b.dataset.command,true)}});
-  $('save-settings').onclick=saveSettings;$('discover-cameras').onclick=discoverCameras;$('add-camera').onclick=addCamera;$('test-alert').onclick=async()=>{try{await api('/api/alerts/test',{method:'POST'});toast('Test email sent')}catch(e){toast(e.message,true)}};
+  $('save-settings').onclick=saveSettings;$('save-alerts').onclick=saveSettings;$('discover-cameras').onclick=discoverCameras;$('add-camera').onclick=addCamera;$('test-alert').onclick=async()=>{const status=$('test-alert-status');status.textContent='Sending…';try{await api('/api/alerts/test',{method:'POST'});status.textContent='Test email sent';toast('Test email sent')}catch(e){status.textContent=e.message;toast(e.message,true)}};
   $('camera-settings').onclick=e=>{const remove=e.target.closest('[data-remove-camera]');if(remove){S.cameras.splice(Number(remove.dataset.removeCamera),1);renderCameraSettings();return}const probe=e.target.closest('[data-probe-camera]');if(probe)probeCamera(probe.dataset.probeCamera);const sd=e.target.closest('[data-sd-camera]');if(sd)checkSd(sd.dataset.sdCamera);};
   $('refresh-logs').onclick=loadLogs;
 }

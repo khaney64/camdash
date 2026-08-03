@@ -100,11 +100,19 @@
             <label>Backend<select name="backend"><option value="llm">Local LLM</option><option value="anthropic">Anthropic</option></select></label>
             <label>Local LLM URL<input name="llm_url" placeholder="http://llmserver:8080/v1"></label>
             <label>Local model<input name="llm_model"></label>
-            <label class="switch"><input name="alerts_enabled" type="checkbox"><span>Enable alerts</span></label>
-            <label>Alert cooldown minutes<input name="alert_cooldown_minutes" type="number" min="0"></label>
             <label class="wide-field">Default prompt<textarea name="prompt" rows="6"></textarea></label>
           </div>
-          <button type="button" class="button" id="test-alert">Send test email</button>
+        </form>
+        <form id="alert-settings" class="panel settings-card wide">
+          <h2>Alert settings</h2>
+          <div class="alert-row"><label class="switch"><input name="alerts_enabled" type="checkbox"><span>Send alerts</span></label></div>
+          <div class="alert-row alert-email-row">
+            <div><span class="field-title">Email</span><span id="alert-email-status" class="muted">Not configured</span></div>
+            <div><button type="button" class="button" id="test-alert">Send test</button><span id="test-alert-status" class="muted"></span></div>
+          </div>
+          <div class="alert-row"><label>Cooldown (minutes) per rule<input name="alert_cooldown_minutes" type="number" min="0" max="1440"></label></div>
+          <div id="alert-rule-toggles" class="alert-rules"></div>
+          <div class="alert-actions"><span id="alert-settings-message" class="message"></span><button type="button" class="button primary" id="save-alerts">Save alerts</button></div>
         </form>
       </div>
       <div class="section-head compact"><h2>Cameras</h2><div><button class="button" id="discover-cameras">Discover ONVIF</button><button class="button" id="add-camera">Add camera</button></div></div>

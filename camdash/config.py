@@ -58,6 +58,8 @@ class AnalysisConfig:
     thinking_budget: int = 2048
     alerts_enabled: bool = False
     alert_cooldown_minutes: int = 30
+    alert_rules_enabled: dict[str, bool] = field(default_factory=dict)
+    remove_person_only_images: bool = False
 
 
 @dataclass(slots=True)
@@ -154,6 +156,14 @@ def _validate(cfg: AppConfig) -> None:
             raise ValueError("video duration must be between 1 and 3600 seconds")
     if cfg.mqtt.port not in range(1, 65536):
         raise ValueError("invalid MQTT port")
+    if not 0 <= cfg.analysis.alert_cooldown_minutes <= 1440:
+        raise ValueError("alert cooldown must be between 0 and 1440 minutes")
+    person_enabled = next(
+        (enabled for name, enabled in cfg.analysis.alert_rules_enabled.items() if name.lower() == "person"),
+        True,
+    )
+    if cfg.analysis.remove_person_only_images and person_enabled:
+        raise ValueError("person alerts and person-only image removal cannot both be enabled")
 
 
 def save_config(cfg: AppConfig, path: Path) -> None:

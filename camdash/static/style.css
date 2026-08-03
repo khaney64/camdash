@@ -88,6 +88,12 @@ textarea { resize: vertical; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .settings-card { padding: 18px; }
 .settings-card.wide { grid-column: 1/-1; }
+.alert-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 0; border-bottom: 1px solid var(--line); }
+.alert-email-row>div { display: flex; align-items: center; gap: .75rem; }.field-title { font-weight: 650; margin-right: .4rem; }
+.alert-rules { display: grid; gap: 0; }.alert-rule { padding: .85rem 0; border-bottom: 1px solid var(--line); }
+.alert-rule .nested { margin: .75rem 0 0 2rem; color: var(--muted); }
+.alert-actions { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; padding-top: 1rem; }
+#alert-email-status.success { color: var(--success); }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 13px; }
 .wide-field { grid-column: 1/-1; }
 .camera-form { padding: 18px; margin-bottom: 14px; }

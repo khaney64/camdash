@@ -140,6 +140,16 @@
     <div id="event-detail"></div>
   </dialog>
 
+  <dialog id="media-dialog" class="media-dialog" aria-labelledby="media-dialog-title">
+    <div class="media-dialog-card">
+      <div class="chat-dialog-header">
+        <h3 id="media-dialog-title">Event media</h3>
+        <button type="button" class="chat-close-btn" aria-label="Close media">✕</button>
+      </div>
+      <div id="media-dialog-body" class="media-dialog-body"></div>
+    </div>
+  </dialog>
+
   <dialog id="chat-dialog" class="chat-dialog" aria-labelledby="chat-dialog-title">
     <div class="chat-dialog-card">
       <div class="chat-dialog-header">
@@ -153,6 +163,22 @@
           <button type="button" id="chat-submit-btn" class="button primary">Ask</button>
         </div>
         <div id="chat-response" class="chat-response hidden" aria-live="polite"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+    <div class="confirm-dialog-card">
+      <div class="chat-dialog-header">
+        <h3 id="confirm-dialog-title">Confirm deletion</h3>
+        <button type="button" class="chat-close-btn" aria-label="Close confirmation">✕</button>
+      </div>
+      <div class="confirm-dialog-body">
+        <p id="confirm-dialog-message"></p>
+        <div class="confirm-dialog-actions">
+          <button type="button" id="confirm-cancel-btn" class="button">Cancel</button>
+          <button type="button" id="confirm-accept-btn" class="button danger">Delete</button>
+        </div>
       </div>
     </div>
   </dialog>

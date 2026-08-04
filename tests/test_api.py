@@ -30,6 +30,22 @@ def test_frontend_initializes_camera_dropdowns():
     assert "data-motor-restart" not in source
 
 
+def test_gallery_uses_in_app_delete_confirmation_and_media_lightbox():
+    root = Path(__file__).parents[1] / "camdash" / "static"
+    source = (root / "app.js").read_text(encoding="utf-8")
+    markup = (root / "index.html").read_text(encoding="utf-8")
+    styles = (root / "style.css").read_text(encoding="utf-8")
+
+    assert "confirm(" not in source
+    assert 'class="card-delete" data-delete-event=' in source
+    assert "askConfirmation('Delete event?'" in source
+    assert 'data-open-media="${media.id}"' in source
+    assert 'id="media-dialog"' in markup
+    assert 'id="confirm-dialog"' in markup
+    assert "width: min(66.667vw, 1200px)" in styles
+    assert ".media-dialog-card { width: 100vw; height: 100vh" in styles
+
+
 def test_mjpeg_proxy_uses_shared_relay():
     source = (Path(__file__).parents[1] / "camdash" / "main.py").read_text(encoding="utf-8")
     assert "s.mjpeg_relay(camera_id, hd)" in source

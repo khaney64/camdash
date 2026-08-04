@@ -1,7 +1,8 @@
 const TABS = [
   ['gallery','Gallery','▦'], ['live','Live','●'], ['local','Local','★'], ['settings','Settings','⚙'], ['logs','Logs','≡']
 ];
-const S = {tab:'gallery',settings:null,cameras:[],events:[],saved:[],liveCamera:null,livePtz:false,hls:null,evt:null,chatMedia:null};
+const S = {tab:'gallery',settings:null,cameras:[],events:[],saved:[],liveCamera:null,livePtz:false,hls:null,evt:null,chatMedia:null,currentEvent:null};
+let confirmResolver=null;
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 
@@ -49,7 +50,7 @@ function renderEvents() {
   $('gallery-grid').innerHTML=S.events.map(event=>{
     const detections=event.analysis?.detections||[];
     const thumb=event.primary_media_id?`<img class="media-thumb" loading="lazy" src="/api/media/${event.primary_media_id}/thumb" alt="${esc(event.camera_name)} capture">`:'<div class="media-thumb placeholder">No preview</div>';
-    return `<article class="media-card ${analysisClass(detections)}" data-event="${event.id}">${thumb}${detectionOverlay(detections)}<div class="card-body"><div class="card-title">${esc(event.camera_name)}</div><div class="card-meta"><span>${formatTime(event.triggered_at)}</span><span>${event.trigger_count>1?'×'+event.trigger_count:''}</span></div><div class="badges"><span class="badge ${esc(event.status)}">${esc(event.status)}</span></div></div></article>`;
+    return `<article class="media-card ${analysisClass(detections)}" data-event="${event.id}">${thumb}${detectionOverlay(detections)}<div class="card-body"><div class="card-title">${esc(event.camera_name)}</div><div class="card-meta"><span>${formatTime(event.triggered_at)}</span><span>${event.trigger_count>1?'×'+event.trigger_count:''}</span></div><div class="card-footer"><span class="badge ${esc(event.status)}">${esc(event.status)}</span><button type="button" class="card-delete" data-delete-event="${event.id}" title="Delete event" aria-label="Delete event">🗑</button></div></div></article>`;
   }).join('');
 }
 const DETECTION_LABELS={raccoon:'🦝 raccoon',bear:'🐻 bear',coyote:'🐺 coyote',person:'🚶 person',human:'🚶 person',legs:'🚶 person',fox:'🦊 fox',deer:'🦌 deer',cat:'🐱 cat',dog:'🐶 dog',squirrel:'🐿 squirrel',rabbit:'🐇 rabbit',bird:'🐦 bird',skunk:'🦨 skunk',turkey:'🦃 turkey',opossum:'🐾 opossum',possum:'🐾 possum',cupcake:'🧁 Cupcake',sox:'🧦 Sox'};
@@ -68,16 +69,43 @@ function analysisClass(detections){const labels=new Set((detections||[]).map(d=>
 async function openEvent(id) {
   try {
     const event=await api('/api/events/'+id); const detections=detectionParts(event.analysis?.detections||[]).map(p=>`<span class="detail-detection">${esc(p.text)}</span>`).join('<span class="analysis-separator">·</span>');
+    S.currentEvent=event;
     $('event-detail').dataset.eventId=event.id;
     $('event-detail').innerHTML=`<h2>${esc(event.camera_name)}</h2><p class="muted">${formatTime(event.triggered_at)} · ${esc(event.source)} · ${esc(event.status)}${event.trigger_count>1?' · '+event.trigger_count+' triggers':''}</p>${event.analysis?`<div class="detail-analysis"><strong>${detections||'No detections'}</strong>${event.analysis.description?`<div>${esc(event.analysis.description)}</div>`:''}</div>`:''}<div class="detail-media">${event.media.map(media=>detailMedia(media)).join('')}</div><div class="camera-actions"><button class="icon-action icon-delete" data-delete-event="${event.id}" title="Delete event" aria-label="Delete event">🗑</button></div>`;
     if(!$('event-dialog').open)$('event-dialog').showModal();
   } catch(e){ toast(e.message,true); }
 }
 function detailMedia(media) {
-  const body=media.path?(media.kind==='video'?`<video controls playsinline src="/api/media/${media.id}/file"></video>`:`<img src="/api/media/${media.id}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
+  const body=media.path?(media.kind==='video'?`<video preload="metadata" muted playsinline src="/api/media/${media.id}/file"></video>`:`<img src="/api/media/${media.id}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
   const overlay=media.kind==='snapshot'?detectionOverlay(media.analysis?.detections||[]):'';
   const chatButton=S.settings?.analysis?.chat_enabled?`<button class="icon-action icon-chat" data-chat-media="${media.id}" title="Chat about image" aria-label="Chat about image">💬</button>`:'';
-  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`${chatButton}<button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
+  const openAttrs=media.path?` media-open" data-open-media="${media.id}" data-media-kind="${esc(media.kind)}" role="button" tabindex="0" aria-label="Open ${esc(media.kind)}`:'';
+  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame${openAttrs}">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`${chatButton}<button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
+}
+
+function openMediaDialog(mediaId,kind) {
+  const isVideo=kind==='video',dialog=$('media-dialog');
+  $('media-dialog-title').textContent=isVideo?'Event video':'Event image';
+  $('media-dialog-body').innerHTML=isVideo?`<video controls autoplay playsinline src="/api/media/${mediaId}/file"></video>`:`<img src="/api/media/${mediaId}/file" alt="Event image">`;
+  if(!dialog.open)dialog.showModal();
+}
+function closeMediaDialog(){const dialog=$('media-dialog'),video=dialog.querySelector('video');if(video)video.pause();if(dialog.open)dialog.close();$('media-dialog-body').innerHTML='';}
+function askConfirmation(title,message,confirmLabel='Delete') {
+  if(confirmResolver)confirmResolver(false);
+  $('confirm-dialog-title').textContent=title;$('confirm-dialog-message').textContent=message;$('confirm-accept-btn').textContent=confirmLabel;
+  const dialog=$('confirm-dialog');if(!dialog.open)dialog.showModal();
+  return new Promise(resolve=>{confirmResolver=resolve});
+}
+function finishConfirmation(confirmed){const resolve=confirmResolver;confirmResolver=null;if($('confirm-dialog').open)$('confirm-dialog').close();if(resolve)resolve(confirmed);}
+async function deleteEvent(id) {
+  const event=S.events.find(item=>item.id===id)||(S.currentEvent?.id===id?S.currentEvent:null);
+  const label=event?.camera_name?`${event.camera_name} event`:'this event';
+  if(!await askConfirmation('Delete event?',`Delete ${label} and its entire snapshot and video collection? SD copies are not affected.`))return;
+  try{await api('/api/events/'+id,{method:'DELETE'});if($('event-dialog').open&&$('event-detail').dataset.eventId===id)$('event-dialog').close();S.currentEvent=null;await loadEvents();toast('Event deleted');}catch(err){toast(err.message,true)}
+}
+async function deleteSaved(id) {
+  if(!await askConfirmation('Delete saved item?','Delete this item from Local? This cannot be undone.'))return;
+  try{await api('/api/saved/'+id,{method:'DELETE'});await loadSaved();toast('Saved item deleted');}catch(err){toast(err.message,true)}
 }
 
 async function loadSaved() {
@@ -184,15 +212,18 @@ async function submitChat(){
 
 function bind() {
   $('refresh-events').onclick=loadEvents; $('gallery-camera').onchange=loadEvents;$('gallery-status').onchange=loadEvents;$('gallery-query').oninput=debounce(loadEvents,350);
-  $('gallery-grid').onclick=e=>{const card=e.target.closest('[data-event]');if(card)openEvent(card.dataset.event)};
+  $('gallery-grid').onclick=e=>{const del=e.target.closest('[data-delete-event]');if(del){deleteEvent(del.dataset.deleteEvent);return}const card=e.target.closest('[data-event]');if(card)openEvent(card.dataset.event)};
   $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close();
   $('event-dialog').addEventListener('click',async e=>{
+    const media=e.target.closest('[data-open-media]');if(media){openMediaDialog(media.dataset.openMedia,media.dataset.mediaKind);return}
     const save=e.target.closest('[data-save-media]');if(save){try{await api(`/api/media/${save.dataset.saveMedia}/save`,{method:'POST'});toast('Saved to Local');}catch(err){toast(err.message,true)}}
     const analyze=e.target.closest('[data-analyze-media]');if(analyze){try{await api(`/api/media/${analyze.dataset.analyzeMedia}/analyze`,{method:'POST'});toast('Analysis complete');const eventId=$('event-detail').dataset.eventId;if(eventId)await openEvent(eventId);}catch(err){toast(err.message,true)}}
     const chat=e.target.closest('[data-chat-media]');if(chat)openChatDialog(chat.dataset.chatMedia);
-    const del=e.target.closest('[data-delete-event]');if(del&&confirm('Delete this event from the server? SD copies are not affected.')){await api('/api/events/'+del.dataset.deleteEvent,{method:'DELETE'});$('event-dialog').close();loadEvents();}
+    const del=e.target.closest('[data-delete-event]');if(del)deleteEvent(del.dataset.deleteEvent);
   });
-  $('local-grid').onclick=async e=>{const b=e.target.closest('[data-delete-saved]');if(b&&confirm('Delete this saved item?')){await api('/api/saved/'+b.dataset.deleteSaved,{method:'DELETE'});loadSaved();}};
+  $('event-dialog').addEventListener('keydown',e=>{const media=e.target.closest('[data-open-media]');if(media&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openMediaDialog(media.dataset.openMedia,media.dataset.mediaKind)}});
+  $('event-dialog').addEventListener('close',()=>{S.currentEvent=null});
+  $('local-grid').onclick=e=>{const b=e.target.closest('[data-delete-saved]');if(b)deleteSaved(b.dataset.deleteSaved)};
   $('live-start').onclick=toggleLive;$('manual-snapshot').onclick=()=>manualCapture('snapshot');$('manual-clip').onclick=()=>manualCapture('clip');$('copy-rtsp').onclick=copyRtspUrl;$('live-camera').onchange=liveSelectionChanged;$('live-hd').onchange=liveSelectionChanged;
   $('live-stage').onclick=e=>{if(!S.liveCamera||!S.livePtz||!e.target.closest('.live-media'))return;$('ptz-pad').classList.toggle('hidden');};
   document.addEventListener('click',e=>{if(!e.target.closest('#ptz-pad')&&!e.target.closest('.live-media'))$('ptz-pad').classList.add('hidden');});
@@ -203,6 +234,8 @@ function bind() {
   $('refresh-logs').onclick=loadLogs;
   $('chat-dialog').onclick=e=>{if(e.target===$('chat-dialog'))closeChatDialog()};$('chat-dialog').querySelector('.chat-close-btn').onclick=closeChatDialog;$('chat-submit-btn').onclick=submitChat;$('chat-prompt-input').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')submitChat()};
   $('chat-dialog').addEventListener('close',()=>{S.chatMedia=null});
+  $('media-dialog').onclick=e=>{if(e.target===$('media-dialog'))closeMediaDialog()};$('media-dialog').querySelector('.chat-close-btn').onclick=closeMediaDialog;$('media-dialog').addEventListener('close',()=>{$('media-dialog-body').innerHTML=''});
+  $('confirm-dialog').onclick=e=>{if(e.target===$('confirm-dialog'))finishConfirmation(false)};$('confirm-dialog').querySelector('.chat-close-btn').onclick=()=>finishConfirmation(false);$('confirm-cancel-btn').onclick=()=>finishConfirmation(false);$('confirm-accept-btn').onclick=()=>finishConfirmation(true);$('confirm-dialog').addEventListener('close',()=>{if(confirmResolver){const resolve=confirmResolver;confirmResolver=null;resolve(false)}});
 }
 function debounce(fn,ms){let t;return()=>{clearTimeout(t);t=setTimeout(fn,ms)}}
 function connectEvents(){if(S.evt)S.evt.close();S.evt=new EventSource('/api/updates');S.evt.onmessage=e=>{const data=JSON.parse(e.data);if(data.type.startsWith('event_')||data.type==='capture_progress'||data.type==='analysis_update'){if(S.tab==='gallery')loadEvents();}if(data.type==='saved'&&S.tab==='local')loadSaved();};S.evt.onerror=()=>setTimeout(connectEvents,3000);}

@@ -116,9 +116,10 @@ class CaptureManager:
                     except Exception:
                         LOG.exception("recorded video duration probe failed camera=%s event=%s", camera.id, event_id)
 
+        use_video_snapshots = duration > 0 and video_path.exists()
         try:
             for index in range(capture.snapshots):
-                if duration > 0:
+                if use_video_snapshots:
                     requested_offset = index * capture.snapshot_interval_seconds
                     offset = min(requested_offset, max(0.0, video_duration - 0.1))
                     media = await self._snapshot_from_video(

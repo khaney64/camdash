@@ -173,6 +173,65 @@ async def test_video_snapshot_records_failure_for_invalid_start_timestamp(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_video_recording_failure_falls_back_to_camera_snapshots(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1")
+    capture = CaptureConfig(snapshots=2, snapshot_interval_seconds=0, day_video_seconds=30,
+                            night_video_seconds=30, cooldown_seconds=0)
+    calls = []
+
+    class FakeDatabase:
+        def __init__(self):
+            self.media = []
+
+        def update_event(self, _event_id, **_values):
+            pass
+
+        def get_event(self, _event_id):
+            return {"id": "event-1", "media": self.media}
+
+    async def broadcast(_message):
+        pass
+
+    class FakeAdapter:
+        def rtsp_url(self, _main):
+            return "rtsp://camera/ch1"
+
+    database = FakeDatabase()
+    manager = CaptureManager(database, lambda: cfg, broadcast)
+
+    async def failed_record(*_args):
+        calls.append("record")
+        raise CameraError("ffmpeg failed")
+
+    async def camera_snapshot(_adapter, _event, _event_dir, index):
+        calls.append(f"snapshot-{index}")
+        row = {"id": f"snapshot-{index}", "kind": "snapshot", "path": str(tmp_path / f"{index}.jpg")}
+        database.media.append(row)
+        return row
+
+    async def video_snapshot(*_args):
+        raise AssertionError("missing recording must use camera snapshots")
+
+    async def fake_analyze(*_args):
+        calls.append("analyze")
+        return False
+
+    monkeypatch.setattr("camdash.capture.adapter_for", lambda _camera: FakeAdapter())
+    monkeypatch.setattr(manager, "_record_video", failed_record)
+    monkeypatch.setattr(manager, "_snapshot", camera_snapshot)
+    monkeypatch.setattr(manager, "_snapshot_from_video", video_snapshot)
+    monkeypatch.setattr(manager, "_analyze", fake_analyze)
+
+    await manager._run({
+        "id": "event-1", "camera_name": "Cam", "triggered_at": "2026-08-03T12:00:00+00:00",
+        "received_at": "2026-08-03T12:00:00+00:00", "profile": "day",
+    }, camera, capture)
+
+    assert calls == ["record", "snapshot-0", "snapshot-1", "analyze"]
+
+
+@pytest.mark.asyncio
 async def test_event_records_video_before_deriving_snapshots(tmp_path: Path, monkeypatch):
     cfg = AppConfig(data_dir=str(tmp_path))
     camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1", record_stream="sub")

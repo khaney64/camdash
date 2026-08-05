@@ -18,10 +18,37 @@ LOG = logging.getLogger(__name__)
 Trigger = Callable[..., Awaitable[dict[str, Any]]]
 
 
+class MotionSuppressor:
+    def __init__(self, clock: Callable[[], float] = time.monotonic):
+        self._clock = clock
+        self._until: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def suppress(self, camera_id: str, seconds: float) -> None:
+        until = self._clock() + max(0.0, seconds)
+        with self._lock:
+            self._until[camera_id] = max(until, self._until.get(camera_id, 0.0))
+
+    def clear(self, camera_id: str) -> None:
+        with self._lock:
+            self._until.pop(camera_id, None)
+
+    def remaining(self, camera_id: str) -> float:
+        now = self._clock()
+        with self._lock:
+            remaining = self._until.get(camera_id, 0.0) - now
+            if remaining <= 0:
+                self._until.pop(camera_id, None)
+                return 0.0
+            return remaining
+
+
 class MqttSource:
-    def __init__(self, config_getter: Callable[[], AppConfig], trigger: Trigger):
+    def __init__(self, config_getter: Callable[[], AppConfig], trigger: Trigger,
+                 motion_suppressor: MotionSuppressor | None = None):
         self.config_getter = config_getter
         self.trigger = trigger
+        self.motion_suppressor = motion_suppressor
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client: mqtt.Client | None = None
         self.connected = False
@@ -85,6 +112,13 @@ class MqttSource:
             configured = self.config_getter().camera(camera_id)
             if configured.mqtt_topic and configured.mqtt_topic != message.topic:
                 raise ValueError("topic does not match camera configuration")
+            remaining = self.motion_suppressor.remaining(camera_id) if self.motion_suppressor else 0.0
+            if remaining > 0:
+                LOG.info(
+                    "MQTT: motion suppressed after PTZ camera=%s remaining_seconds=%.2f",
+                    camera_id, remaining,
+                )
+                return
             timestamp = str(payload.get("timestamp", ""))
             source_key = f"{message.topic}:{timestamp}:{event}"
             asyncio.run_coroutine_threadsafe(

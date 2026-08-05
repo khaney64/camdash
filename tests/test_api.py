@@ -1,13 +1,93 @@
+import asyncio
 from pathlib import Path
+from queue import Empty
 
 from fastapi.testclient import TestClient
 
 from camdash.config import AppConfig, CameraConfig, save_config
 
 
+def test_mjpeg_viewer_queue_wait_is_bounded():
+    calls = []
+
+    class FrameQueue:
+        def get(self, *, timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                raise Empty
+            return b"frame"
+
+    from camdash.main import MJPEG_QUEUE_WAIT_SECONDS, _next_mjpeg_frame
+
+    assert asyncio.run(_next_mjpeg_frame(FrameQueue())) == b"frame"
+    assert calls == [MJPEG_QUEUE_WAIT_SECONDS, MJPEG_QUEUE_WAIT_SECONDS]
+
+
 def test_frontend_initializes_camera_dropdowns():
     source = (Path(__file__).parents[1] / "camdash" / "static" / "app.js").read_text(encoding="utf-8")
     assert "await loadSettings();await loadCameras();" in source
+    assert "data-motor-status" in source
+    assert "data-motor-restart" not in source
+    assert 'aria-label="Open ${esc(media.kind)}"' in source
+    assert "const mediaId=esc(media.id),mediaUrl=encodeURIComponent(String(media.id ?? ''));" in source
+    assert 'data-open-media="${mediaId}"' in source
+    assert 'data-chat-media="${mediaId}"' in source
+    assert 'data-save-media="${mediaId}"' in source
+    assert "const mediaUrl=encodeURIComponent(String(mediaId ?? ''))" in source
+
+
+def test_gallery_uses_in_app_delete_confirmation_and_media_lightbox():
+    root = Path(__file__).parents[1] / "camdash" / "static"
+    source = (root / "app.js").read_text(encoding="utf-8")
+    markup = (root / "index.html").read_text(encoding="utf-8")
+    styles = (root / "style.css").read_text(encoding="utf-8")
+
+    assert "confirm(" not in source
+    assert 'class="card-delete" data-delete-event=' in source
+    assert "askConfirmation('Delete event?'" in source
+    assert 'data-open-media="${mediaId}"' in source
+    assert 'id="media-dialog"' in markup
+    assert 'id="confirm-dialog"' in markup
+    assert "width: min(66.667vw, 1200px)" in styles
+    assert ".media-dialog-card { width: 100vw; height: 100vh" in styles
+
+
+def test_mjpeg_proxy_uses_shared_relay():
+    source = (Path(__file__).parents[1] / "camdash" / "main.py").read_text(encoding="utf-8")
+    assert "s.mjpeg_relay(camera_id, hd)" in source
+
+
+def test_restart_sources_closes_mjpeg_relays(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    save_config(AppConfig(data_dir=str(tmp_path)), config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash import main
+
+    class Source:
+        def stop(self):
+            pass
+
+        def start(self, loop):
+            pass
+
+    class Relay:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(main, "MqttSource", lambda *args: Source())
+    monkeypatch.setattr(main, "OnvifEventSource", lambda *args: Source())
+    state = main.AppState()
+    relay = Relay()
+    state.mjpeg_relays[("removed-camera", False)] = relay
+    try:
+        asyncio.run(state.restart_sources())
+        assert relay.closed is True
+        assert state.mjpeg_relays == {}
+    finally:
+        state.db.close()
 
 
 def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):

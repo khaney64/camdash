@@ -7,7 +7,6 @@
 
 MOTION_ALARM="/run/motion/motion_alarm"
 CAMDASH_TMP="/mnt/mmcblk0p1/.camdash/.tmp"
-MOTION_STOP_FILE="/run/motors.pid"
 MOTION_VIDEO_CHANNEL=0
 
 mkdir -p "$CAMDASH_TMP"
@@ -35,10 +34,19 @@ set_enabled() {
 	jct /etc/prudynt.json set "motion.enabled" "$1"
 }
 
+motor_is_active() {
+	# New motor-daemon builds expose /run/motors-active while older builds used
+	# /run/motors.pid. The busy query covers short races around marker updates.
+	[ -f /run/motors-active ] && return 0
+	[ -f /run/motors.pid ] && return 0
+	command -v motors >/dev/null 2>&1 || return 1
+	[ "$(motors -b 2>/dev/null)" = "1" ]
+}
+
 start() {
 	echo_info "Start motion"
-	if [ -f "$MOTION_STOP_FILE" ]; then
-		echo_error "Motor motion file present. Exiting."
+	if motor_is_active; then
+		echo_info "Ignore camera movement while motor is active."
 		exit 1
 	fi
 

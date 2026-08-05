@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 import logging
 import socket
+import ssl
 import time
 import uuid
 from dataclasses import dataclass
+from http.client import HTTPResponse
 from typing import Any, Iterable
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 from xml.etree import ElementTree
 
 import requests
@@ -31,6 +33,68 @@ def credentialed(url: str, username: str, password: str) -> str:
     parsed = urlparse(url)
     auth = quote(username, safe="") + ":" + quote(password, safe="") + "@"
     return urlunparse(parsed._replace(netloc=auth + parsed.netloc))
+
+
+class StreamingHttpResponse:
+    def __init__(self, sock: socket.socket, raw, status_code: int, headers: dict[str, str]):
+        self._socket = sock
+        self.raw = raw
+        self.status_code = status_code
+        self.headers = headers
+
+    def iter_content(self, chunk_size: int):
+        while True:
+            chunk = self.raw.read1(chunk_size)
+            if not chunk:
+                return
+            yield chunk
+
+    def close(self) -> None:
+        try:
+            self.raw.close()
+        finally:
+            self._socket.close()
+
+
+def open_streaming_http(
+    url: str, auth: tuple[str, str] | None, connect_timeout: int, read_timeout: int,
+) -> StreamingHttpResponse:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise CameraError("MJPEG URL must use HTTP or HTTPS")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    sock = socket.create_connection((parsed.hostname, port), timeout=connect_timeout)
+    if parsed.scheme == "https":
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=parsed.hostname)
+    sock.settimeout(read_timeout)
+    response = None
+    try:
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
+        host = parsed.hostname if parsed.port is None else f"{parsed.hostname}:{parsed.port}"
+        headers = [
+            f"GET {target} HTTP/1.1", f"Host: {host}",
+            "Accept: multipart/x-mixed-replace", "Connection: close",
+        ]
+        credentials = auth
+        if credentials is None and parsed.username is not None:
+            credentials = (unquote(parsed.username), unquote(parsed.password or ""))
+        if credentials:
+            token = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode()).decode("ascii")
+            headers.append(f"Authorization: Basic {token}")
+        sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
+        response = HTTPResponse(sock)
+        response.begin()
+        response_headers = {name.lower(): value for name, value in response.getheaders()}
+        if response.status >= 400:
+            raise CameraError(f"MJPEG HTTP {response.status}")
+        return StreamingHttpResponse(sock, response, response.status, response_headers)
+    except Exception:
+        if response is not None:
+            response.close()
+        sock.close()
+        raise
 
 
 @dataclass(slots=True)
@@ -77,19 +141,21 @@ class CameraAdapter:
             raise CameraError("camera returned an invalid snapshot")
         return response.content, content_type
 
-    def open_mjpeg(self, main: bool = False):
+    def open_mjpeg(self, main: bool = False, read_timeout: int = 60):
         url = self.mjpeg_url(main)
-        response = self.session.get(url, auth=self._auth(url), timeout=(8, 60), stream=True)
-        if response.status_code >= 400:
-            response.close()
-            raise CameraError(f"MJPEG HTTP {response.status_code}")
-        return response
+        try:
+            return open_streaming_http(url, self._auth(url), 8, read_timeout)
+        except (OSError, ssl.SSLError) as exc:
+            raise CameraError(f"MJPEG connection failed: {type(exc).__name__}") from exc
 
     def probe(self) -> CameraProbe:
         return probe_onvif(self.config)
 
-    def ptz(self, command: str, coarse: bool = False) -> None:
+    def ptz(self, command: str, coarse: bool = False) -> dict[str, Any]:
         raise CameraError("PTZ is not supported")
+
+    def motor_status(self) -> dict[str, Any]:
+        return {"supported": False, "healthy": False, "error": "motor control is not supported"}
 
     def sd_status(self) -> dict[str, Any]:
         return {"supported": False}
@@ -125,38 +191,107 @@ class ThinginoAdapter(CameraAdapter):
         channel = 0 if main else 1
         return credentialed(f"rtsp://{self.config.host}/ch{channel}", self.config.username or "thingino", self.config.password)
 
-    def ptz(self, command: str, coarse: bool = False) -> None:
+    def ptz(self, command: str, coarse: bool = False) -> dict[str, Any]:
         directions = {
             "up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0),
             "up-left": (-1, 1), "up-right": (1, 1), "down-left": (-1, -1), "down-right": (1, -1),
         }
         if command in directions:
             x, y = directions[command]
+            params = self._motor_params()
+            divisor = 10 if coarse else 100
+            args = {
+                "d": "g", "x": self._motor_delta(params, "steps_pan", x, divisor),
+                "y": self._motor_delta(params, "steps_tilt", y, divisor),
+            }
+        elif command in {"center", "home"}:
+            return self._motor_helper_request({"action": "center"}, timeout=50)
+        else:
+            raise CameraError("invalid PTZ command")
+        args["token"] = self.config.token
+        try:
+            response = self.session.get(
+                f"http://{self.config.host}/x/json-motor.cgi", params=args, timeout=8,
+            )
+        except requests.RequestException as exc:
+            raise CameraError(f"Thingino PTZ request failed: {type(exc).__name__}") from exc
+        if response.status_code >= 400:
+            raise CameraError(f"Thingino PTZ HTTP {response.status_code}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise CameraError("Thingino PTZ returned invalid JSON") from exc
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, dict) or "xpos" not in message or "ypos" not in message:
+            raise CameraError("Thingino PTZ returned no motor position")
+        requested = {key: value for key, value in args.items() if key != "token"}
+        return {
+            "driver": "thingino", "requested": requested,
+            "position": {"x": message["xpos"], "y": message["ypos"]},
+            "status": message.get("status"),
+        }
+
+    def _motor_params(self) -> dict[str, Any]:
+        try:
             response = self.session.get(
                 f"http://{self.config.host}/x/json-motor-params.cgi",
                 params={"token": self.config.token}, timeout=8,
             )
-            response.raise_for_status()
-            params = response.json()
-            divisor = 10 if coarse else 100
-            args = {
-                "d": "g", "x": x * float(params.get("steps_pan", 0)) / divisor,
-                "y": y * float(params.get("steps_tilt", 0)) / divisor,
-            }
-        elif command == "center":
-            params = self.session.get(
-                f"http://{self.config.host}/x/json-motor-params.cgi",
-                params={"token": self.config.token}, timeout=8,
-            ).json()
-            args = {"d": "x", "x": float(params.get("steps_pan", 0)) / 2, "y": float(params.get("steps_tilt", 0)) / 2}
-        elif command == "home":
-            args = {"d": "r"}
-        else:
-            raise CameraError("invalid PTZ command")
-        args["token"] = self.config.token
-        response = self.session.get(f"http://{self.config.host}/x/json-motor.cgi", params=args, timeout=8)
+        except requests.RequestException as exc:
+            raise CameraError(f"Thingino motor parameters failed: {type(exc).__name__}") from exc
         if response.status_code >= 400:
-            raise CameraError(f"PTZ HTTP {response.status_code}")
+            raise CameraError(f"Thingino motor parameters HTTP {response.status_code}")
+        try:
+            params = response.json()
+        except ValueError as exc:
+            raise CameraError("Thingino motor parameters returned invalid JSON") from exc
+        if not isinstance(params, dict):
+            raise CameraError("Thingino motor parameters returned an invalid payload")
+        return params
+
+    def motor_status(self) -> dict[str, Any]:
+        return self._motor_helper_request()
+
+    def _motor_helper_request(
+        self, extra_params: dict[str, Any] | None = None, timeout: int = 8,
+    ) -> dict[str, Any]:
+        params = {"token": self.config.token}
+        if extra_params:
+            params.update(extra_params)
+        try:
+            response = self.session.get(
+                f"http://{self.config.host}/x/camdash-motor.cgi", params=params, timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            raise CameraError(f"Thingino motor health request failed: {type(exc).__name__}") from exc
+        if response.status_code == 404:
+            raise CameraError("Thingino motor recovery helper is not installed")
+        if response.status_code >= 400:
+            raise CameraError(f"Thingino motor health HTTP {response.status_code}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise CameraError("Thingino motor health returned invalid JSON") from exc
+        if not isinstance(payload, dict) or payload.get("supported") is not True:
+            raise CameraError("Thingino motor health returned an invalid payload")
+        return payload
+
+    @staticmethod
+    def _motor_limit(params: dict[str, Any], name: str) -> float:
+        try:
+            value = float(params.get(name, 0))
+        except (TypeError, ValueError) as exc:
+            raise CameraError(f"Thingino motor calibration {name} is invalid") from exc
+        if value <= 0:
+            raise CameraError(f"Thingino motor calibration {name} is not configured")
+        return value
+
+    @classmethod
+    def _motor_delta(cls, params: dict[str, Any], name: str, direction: int, divisor: int) -> int:
+        if direction == 0:
+            return 0
+        amount = max(1, round(cls._motor_limit(params, name) / divisor))
+        return direction * amount
 
     def sd_status(self) -> dict[str, Any]:
         response = self.session.get(
@@ -221,7 +356,7 @@ class OnvifAdapter(CameraAdapter):
         }).Uri.replace("0.0.0.0", self.config.host)
         return credentialed(uri, self.config.username, self.config.password)
 
-    def ptz(self, command: str, coarse: bool = False) -> None:
+    def ptz(self, command: str, coarse: bool = False) -> dict[str, Any]:
         try:
             if self._ptz is None:
                 self._ptz = self._client().create_ptz_service()
@@ -241,6 +376,7 @@ class OnvifAdapter(CameraAdapter):
                 self._ptz.RelativeMove({"ProfileToken": profile.token, "Translation": {"PanTilt": {"x": x, "y": y}}})
             else:
                 raise CameraError("invalid PTZ command")
+            return {"driver": "onvif", "requested": {"command": command, "coarse": coarse}}
         except Exception as exc:
             raise CameraError(f"ONVIF PTZ failed: {exc}") from exc
 

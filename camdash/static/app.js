@@ -76,17 +76,18 @@ async function openEvent(id) {
   } catch(e){ toast(e.message,true); }
 }
 function detailMedia(media) {
-  const body=media.path?(media.kind==='video'?`<video preload="metadata" muted playsinline src="/api/media/${media.id}/file"></video>`:`<img src="/api/media/${media.id}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
+  const mediaId=esc(media.id),mediaUrl=encodeURIComponent(String(media.id ?? ''));
+  const body=media.path?(media.kind==='video'?`<video preload="metadata" muted playsinline src="/api/media/${mediaUrl}/file"></video>`:`<img src="/api/media/${mediaUrl}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
   const overlay=media.kind==='snapshot'?detectionOverlay(media.analysis?.detections||[]):'';
-  const chatButton=S.settings?.analysis?.chat_enabled?`<button class="icon-action icon-chat" data-chat-media="${media.id}" title="Chat about image" aria-label="Chat about image">💬</button>`:'';
-  const openAttrs=media.path?` media-open" data-open-media="${media.id}" data-media-kind="${esc(media.kind)}" role="button" tabindex="0" aria-label="Open ${esc(media.kind)}"`:'';
-  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame${openAttrs}">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`${chatButton}<button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
+  const chatButton=S.settings?.analysis?.chat_enabled?`<button class="icon-action icon-chat" data-chat-media="${mediaId}" title="Chat about image" aria-label="Chat about image">💬</button>`:'';
+  const openAttrs=media.path?` media-open" data-open-media="${mediaId}" data-media-kind="${esc(media.kind)}" role="button" tabindex="0" aria-label="Open ${esc(media.kind)}"`:'';
+  return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame${openAttrs}">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`${chatButton}<button class="icon-action icon-analyze" data-analyze-media="${mediaId}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${mediaId}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
 }
 
 function openMediaDialog(mediaId,kind) {
-  const isVideo=kind==='video',dialog=$('media-dialog');
+  const mediaUrl=encodeURIComponent(String(mediaId ?? '')),isVideo=kind==='video',dialog=$('media-dialog');
   $('media-dialog-title').textContent=isVideo?'Event video':'Event image';
-  $('media-dialog-body').innerHTML=isVideo?`<video controls autoplay playsinline src="/api/media/${mediaId}/file"></video>`:`<img src="/api/media/${mediaId}/file" alt="Event image">`;
+  $('media-dialog-body').innerHTML=isVideo?`<video controls autoplay playsinline src="/api/media/${mediaUrl}/file"></video>`:`<img src="/api/media/${mediaUrl}/file" alt="Event image">`;
   if(!dialog.open)dialog.showModal();
 }
 function closeMediaDialog(){const dialog=$('media-dialog'),video=dialog.querySelector('video');if(video)video.pause();if(dialog.open)dialog.close();$('media-dialog-body').innerHTML='';}

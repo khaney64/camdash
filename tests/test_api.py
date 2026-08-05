@@ -29,6 +29,11 @@ def test_frontend_initializes_camera_dropdowns():
     assert "data-motor-status" in source
     assert "data-motor-restart" not in source
     assert 'aria-label="Open ${esc(media.kind)}"' in source
+    assert "const mediaId=esc(media.id),mediaUrl=encodeURIComponent(String(media.id ?? ''));" in source
+    assert 'data-open-media="${mediaId}"' in source
+    assert 'data-chat-media="${mediaId}"' in source
+    assert 'data-save-media="${mediaId}"' in source
+    assert "const mediaUrl=encodeURIComponent(String(mediaId ?? ''))" in source
 
 
 def test_gallery_uses_in_app_delete_confirmation_and_media_lightbox():
@@ -40,7 +45,7 @@ def test_gallery_uses_in_app_delete_confirmation_and_media_lightbox():
     assert "confirm(" not in source
     assert 'class="card-delete" data-delete-event=' in source
     assert "askConfirmation('Delete event?'" in source
-    assert 'data-open-media="${media.id}"' in source
+    assert 'data-open-media="${mediaId}"' in source
     assert 'id="media-dialog"' in markup
     assert 'id="confirm-dialog"' in markup
     assert "width: min(66.667vw, 1200px)" in styles

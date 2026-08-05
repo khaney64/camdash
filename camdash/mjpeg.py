@@ -74,6 +74,8 @@ def mjpeg_frames(chunks: Iterable[bytes]) -> Iterable[bytes]:
                 if end < 0:
                     if start:
                         del buffer[:start]
+                    if len(buffer) > MAX_FRAME_BUFFER:
+                        del buffer[:-1]
                     break
                 end += len(JPEG_EOI)
                 yield bytes(buffer[start:end])
@@ -86,6 +88,8 @@ def mjpeg_frames(chunks: Iterable[bytes]) -> Iterable[bytes]:
                 break
             marker = buffer.find(boundary)
             if marker < 0:
+                if len(buffer) > MAX_FRAME_BUFFER:
+                    del buffer[:-(len(boundary) - 1)]
                 break
             if marker:
                 del buffer[:marker]
@@ -118,6 +122,8 @@ def mjpeg_frames(chunks: Iterable[bytes]) -> Iterable[bytes]:
                 continue
             next_marker = buffer.find(boundary, body_start)
             if next_marker < 0:
+                if len(buffer) > MAX_FRAME_BUFFER:
+                    del buffer[:-(len(boundary) - 1)]
                 break
             yield bytes(buffer[body_start:next_marker]).rstrip(b"\r\n")
             del buffer[:next_marker]

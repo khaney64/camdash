@@ -159,6 +159,9 @@ class AppState:
     async def restart_sources(self) -> None:
         self.mqtt.stop()
         self.onvif.stop()
+        for relay in self.mjpeg_relays.values():
+            relay.close()
+        self.mjpeg_relays.clear()
         self.mqtt = MqttSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
         self.onvif = OnvifEventSource(lambda: self.config, self.capture.trigger)
         loop = asyncio.get_running_loop()

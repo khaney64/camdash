@@ -79,7 +79,7 @@ function detailMedia(media) {
   const body=media.path?(media.kind==='video'?`<video preload="metadata" muted playsinline src="/api/media/${media.id}/file"></video>`:`<img src="/api/media/${media.id}/file" alt="Captured image">`):`<div class="empty">${esc(media.error||'Unavailable')}</div>`;
   const overlay=media.kind==='snapshot'?detectionOverlay(media.analysis?.detections||[]):'';
   const chatButton=S.settings?.analysis?.chat_enabled?`<button class="icon-action icon-chat" data-chat-media="${media.id}" title="Chat about image" aria-label="Chat about image">💬</button>`:'';
-  const openAttrs=media.path?` media-open" data-open-media="${media.id}" data-media-kind="${esc(media.kind)}" role="button" tabindex="0" aria-label="Open ${esc(media.kind)}`:'';
+  const openAttrs=media.path?` media-open" data-open-media="${media.id}" data-media-kind="${esc(media.kind)}" role="button" tabindex="0" aria-label="Open ${esc(media.kind)}"`:'';
   return `<div class="detail-item ${analysisClass(media.analysis?.detections||[])}"><div class="detail-media-frame${openAttrs}">${body}${overlay}</div><div class="detail-actions"><span class="badge">${esc(media.kind)}</span>${media.path?`${media.kind==='snapshot'?`${chatButton}<button class="icon-action icon-analyze" data-analyze-media="${media.id}" title="Re-analyze" aria-label="Re-analyze">🔬</button>`:''}<button class="icon-action icon-save" data-save-media="${media.id}" title="Save to Local" aria-label="Save to Local">💾</button>`:''}</div></div>`;
 }
 

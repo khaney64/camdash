@@ -149,6 +149,30 @@ async def test_snapshot_is_derived_from_video_at_requested_offset(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_video_snapshot_records_failure_for_invalid_start_timestamp(tmp_path: Path):
+    cfg = AppConfig(data_dir=str(tmp_path))
+
+    class FakeDatabase:
+        row = None
+
+        def add_media(self, row):
+            self.row = row
+
+    async def broadcast(_message):
+        pass
+
+    database = FakeDatabase()
+    manager = CaptureManager(database, lambda: cfg, broadcast)
+    row = await manager._snapshot_from_video(
+        tmp_path / "clip.mp4", {"id": "event-1"}, tmp_path, 0, 0, "not-an-iso-timestamp",
+    )
+
+    assert row == database.row
+    assert row["captured_at"] == "not-an-iso-timestamp"
+    assert "Invalid isoformat string" in row["error"]
+
+
+@pytest.mark.asyncio
 async def test_event_records_video_before_deriving_snapshots(tmp_path: Path, monkeypatch):
     cfg = AppConfig(data_dir=str(tmp_path))
     camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1", record_stream="sub")

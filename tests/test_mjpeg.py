@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from camdash import mjpeg
 from camdash.mjpeg import MjpegRelay, jpeg_frames, mjpeg_frames, multipart_frame, response_chunks
 from camdash.cameras import open_streaming_http
 
@@ -51,6 +52,25 @@ def test_mjpeg_frames_accepts_thingino_oversized_content_length():
         + JPEG_1 + b"\r\n"
     )
     assert list(mjpeg_frames([part])) == [JPEG_1]
+
+
+def test_mjpeg_frames_recovers_after_missing_boundary_before_headers(monkeypatch):
+    monkeypatch.setattr(mjpeg, "MAX_FRAME_BUFFER", 32)
+    boundary = b"--camera-boundary"
+
+    def part(frame: bytes) -> bytes:
+        return boundary + b"\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame
+
+    chunks = [part(b"one"), b"x" * 64, b"--camera-", b"boundary\r\nContent-Length: 3\r\n\r\ntwo"]
+    assert list(mjpeg_frames(chunks)) == [b"one", b"two"]
+
+
+def test_mjpeg_frames_recovers_after_missing_boundary_in_body(monkeypatch):
+    monkeypatch.setattr(mjpeg, "MAX_FRAME_BUFFER", 32)
+    boundary = b"--camera-boundary"
+    malformed = boundary + b"\r\nContent-Type: image/jpeg\r\n\r\n" + b"x" * 64
+    valid = b"--camera-boundary\r\nContent-Length: 3\r\n\r\ntwo"
+    assert list(mjpeg_frames([malformed, valid[:9], valid[9:]])) == [b"two"]
 
 
 def test_response_chunks_prefers_available_byte_reader():

@@ -194,12 +194,13 @@ class CaptureManager:
     async def _snapshot_from_video(self, video_path: Path, event: dict[str, Any], event_dir: Path, index: int,
                                    offset_seconds: float, video_started_at: str) -> dict[str, Any]:
         media_id = str(uuid.uuid4())
-        captured_at = (
-            datetime.fromisoformat(video_started_at) + timedelta(seconds=offset_seconds)
-        ).isoformat()
+        captured_at = video_started_at
         path = event_dir / f"snapshot-{index + 1:02d}.jpg"
         thumb = event_dir / f"snapshot-{index + 1:02d}-thumb.jpg"
         try:
+            captured_at = (
+                datetime.fromisoformat(video_started_at) + timedelta(seconds=offset_seconds)
+            ).isoformat()
             if not video_path.exists():
                 raise CameraError("recorded video is unavailable")
             await _run_process([

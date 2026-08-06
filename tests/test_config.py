@@ -13,7 +13,7 @@ def test_config_round_trip_and_masks_secrets(tmp_path: Path):
         id="camera-one", name="Camera One", host="192.0.2.1", adapter="thingino",
         username="thingino", password="private", token="private-token", record_stream="sub",
     )])
-    cfg.mqtt.password = "broker-secret"
+    cfg.webhook.shared_secret = "webhook-secret"
     save_config(cfg, path)
     loaded, _ = load_config(path)
     assert loaded.cameras[0].password == "private"
@@ -21,7 +21,8 @@ def test_config_round_trip_and_masks_secrets(tmp_path: Path):
     public = public_config(loaded)
     assert "password" not in public["cameras"][0]
     assert public["cameras"][0]["has_password"] is True
-    assert "password" not in public["mqtt"]
+    assert "shared_secret" not in public["webhook"]
+    assert public["webhook"]["has_secret"] is True
 
 
 def test_camera_record_stream_validation():
@@ -34,15 +35,15 @@ def test_public_update_preserves_blank_secrets(tmp_path: Path):
     cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
         id="camera-one", name="Camera One", host="192.0.2.1", password="keep", token="keep-token",
     )])
-    cfg.mqtt.password = "keep-mqtt"
+    cfg.webhook.shared_secret = "keep-secret"
     updated = merge_public_update(cfg, {
-        "mqtt": {"host": "broker", "password": ""},
+        "webhook": {"shared_secret": ""},
         "cameras": [{**public_config(cfg)["cameras"][0], "name": "Renamed", "password": "", "token": ""}],
     })
     assert updated.cameras[0].name == "Renamed"
     assert updated.cameras[0].password == "keep"
     assert updated.cameras[0].token == "keep-token"
-    assert updated.mqtt.password == "keep-mqtt"
+    assert updated.webhook.shared_secret == "keep-secret"
 
 
 def test_alert_settings_round_trip_and_person_modes_are_exclusive(tmp_path: Path):

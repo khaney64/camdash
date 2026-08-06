@@ -57,19 +57,12 @@ def test_mjpeg_proxy_uses_shared_relay():
     assert "s.mjpeg_relay(camera_id, hd)" in source
 
 
-def test_restart_sources_closes_mjpeg_relays(tmp_path: Path, monkeypatch):
+def test_close_mjpeg_relays_clears_all(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     save_config(AppConfig(data_dir=str(tmp_path)), config_path)
     monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
 
     from camdash import main
-
-    class Source:
-        def stop(self):
-            pass
-
-        def start(self, loop):
-            pass
 
     class Relay:
         closed = False
@@ -77,13 +70,11 @@ def test_restart_sources_closes_mjpeg_relays(tmp_path: Path, monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(main, "MqttSource", lambda *args: Source())
-    monkeypatch.setattr(main, "OnvifEventSource", lambda *args: Source())
     state = main.AppState()
     relay = Relay()
     state.mjpeg_relays[("removed-camera", False)] = relay
     try:
-        asyncio.run(state.restart_sources())
+        state.close_mjpeg_relays()
         assert relay.closed is True
         assert state.mjpeg_relays == {}
     finally:
@@ -93,9 +84,7 @@ def test_restart_sources_closes_mjpeg_relays(tmp_path: Path, monkeypatch):
 def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     cfg = AppConfig(data_dir=str(tmp_path))
-    cfg.mqtt.host = "127.0.0.1"
-    cfg.mqtt.port = 9
-    cfg.mqtt.password = "secret"
+    cfg.webhook.shared_secret = "secret"
     (tmp_path / "alerts.yaml").write_text("alerts:\n  - name: Cat\n    keywords: [cat]\n", encoding="utf-8")
     save_config(cfg, config_path)
     monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
@@ -110,8 +99,8 @@ def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):
         assert status.status_code == 200
         assert status.json()["ok"] is True
         settings = client.get("/api/settings").json()
-        assert "password" not in settings["mqtt"]
-        assert settings["mqtt"]["has_password"] is True
+        assert "shared_secret" not in settings["webhook"]
+        assert settings["webhook"]["has_secret"] is True
         assert settings["analysis"]["alert_email"] == "alerts@example.test"
         assert settings["analysis"]["alert_email_configured"] is True
         assert settings["analysis"]["alert_rules"] == ["Cat"]
@@ -119,11 +108,70 @@ def test_api_smoke_and_settings_mask(tmp_path: Path, monkeypatch):
         assert events == {"events": []}
 
 
+def test_surveillance_webhook_requires_correct_secret(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
+        id="cam", name="Camera", host="192.0.2.20", adapter="thingino",
+    )])
+    cfg.webhook.shared_secret = "topsecret"
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.main import app
+
+    with TestClient(app) as client:
+        assert client.post("/api/webhooks/surveillance/cam").status_code == 401
+        assert client.post("/api/webhooks/surveillance/cam?secret=wrong").status_code == 401
+
+
+def test_surveillance_webhook_unknown_camera_is_conflict(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.webhook.shared_secret = "topsecret"
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.main import app
+
+    with TestClient(app) as client:
+        response = client.post("/api/webhooks/surveillance/unknown-camera?secret=topsecret")
+        assert response.status_code == 409
+
+
+def test_surveillance_webhook_routes_to_capture_trigger(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
+        id="cam", name="Camera", host="192.0.2.20", adapter="thingino",
+    )])
+    cfg.webhook.shared_secret = "topsecret"
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash import main
+
+    with TestClient(main.app) as client:
+        called = []
+
+        async def fake_trigger(camera_id, source, **kwargs):
+            called.append((camera_id, source, kwargs))
+            return {"id": "event-1"}
+
+        main.STATE.webhook.trigger = fake_trigger
+
+        response = client.post("/api/webhooks/surveillance/cam?secret=topsecret")
+        assert response.status_code == 202
+        assert response.json() == {"id": "event-1"}
+        assert called == [("cam", "webhook", called[0][2])]
+        assert called[0][2]["source_key"]
+
+        status = client.get("/api/status").json()
+        assert status["webhook"]["last_camera_id"] == "cam"
+        assert status["webhook"]["last_received_at"]
+
+
 def test_hls_path_traversal_rejected(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     cfg = AppConfig(data_dir=str(tmp_path))
-    cfg.mqtt.host = "127.0.0.1"
-    cfg.mqtt.port = 9
     save_config(cfg, config_path)
     monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
 
@@ -136,8 +184,6 @@ def test_hls_path_traversal_rejected(tmp_path: Path, monkeypatch):
 def test_live_info_returns_selected_rtsp_profile(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     cfg = AppConfig(data_dir=str(tmp_path))
-    cfg.mqtt.host = "127.0.0.1"
-    cfg.mqtt.port = 9
     cfg.cameras = [CameraConfig(
         id="cam", name="Camera", host="192.0.2.20", adapter="thingino",
         username="viewer", password="p@ss word", enabled=True,
@@ -159,8 +205,6 @@ def test_chat_uses_camera_prompt_and_appends_reasoning(tmp_path: Path, monkeypat
     cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
         id="cam", name="Camera", host="192.0.2.20", prompt_override="Camera-specific prompt",
     )])
-    cfg.mqtt.host = "127.0.0.1"
-    cfg.mqtt.port = 9
     cfg.analysis.enabled = True
     cfg.analysis.chat_enabled = True
     save_config(cfg, config_path)

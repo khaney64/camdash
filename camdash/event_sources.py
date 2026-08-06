@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-import paho.mqtt.client as mqtt
-
-from .config import AppConfig, CameraConfig
+from .config import AppConfig
 
 
 LOG = logging.getLogger(__name__)
@@ -43,176 +39,39 @@ class MotionSuppressor:
             return remaining
 
 
-class MqttSource:
+class WebhookSource:
     def __init__(self, config_getter: Callable[[], AppConfig], trigger: Trigger,
                  motion_suppressor: MotionSuppressor | None = None):
         self.config_getter = config_getter
         self.trigger = trigger
         self.motion_suppressor = motion_suppressor
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self.client: mqtt.Client | None = None
-        self.connected = False
-        self.last_error = ""
+        self.last_received_at: str | None = None
+        self.last_camera_id: str | None = None
+        self.last_error: str = ""
 
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.loop = loop
-        cfg = self.config_getter().mqtt
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="camdash-service", clean_session=True)
-        if cfg.username:
-            client.username_pw_set(cfg.username, cfg.password)
-        if cfg.tls:
-            client.tls_set()
-        client.on_connect = self._on_connect
-        client.on_disconnect = self._on_disconnect
-        client.on_message = self._on_message
-        self.client = client
-        try:
-            client.connect_async(cfg.host, cfg.port, keepalive=60)
-            client.loop_start()
-        except Exception as exc:
-            self.last_error = str(exc)
-            LOG.exception("MQTT startup failed")
-
-    def stop(self) -> None:
-        if self.client:
-            self.client.disconnect()
-            self.client.loop_stop()
-
-    def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
-        self.connected = reason_code == 0
-        if self.connected:
-            topic = self.config_getter().mqtt.topic
-            client.subscribe(topic, qos=1)
-            self.last_error = ""
-            LOG.info("MQTT: connected and subscribed topic=%s", topic)
-        else:
-            self.last_error = f"connect reason {reason_code}"
-            LOG.error("MQTT: connection failed reason=%s", reason_code)
-
-    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties) -> None:
-        self.connected = False
-        if reason_code:
-            self.last_error = f"disconnect reason {reason_code}"
-            LOG.warning("MQTT: disconnected reason=%s", reason_code)
-
-    def _on_message(self, client, userdata, message) -> None:
-        if not self.loop:
-            return
-        try:
-            payload = json.loads(message.payload.decode("utf-8"))
-            camera_id = str(payload.get("camera_id") or _camera_from_topic(message.topic))
-            event = str(payload.get("event", "motion")).lower()
+    async def handle(self, camera_id: str, raw_body: bytes, content_type: str) -> dict[str, Any]:
+        received_at = datetime.now(timezone.utc).isoformat()
+        LOG.info(
+            "Webhook: notification received camera=%s content_type=%s bytes=%d body=%r",
+            camera_id, content_type, len(raw_body), raw_body[:2000],
+        )
+        self.last_received_at = received_at
+        self.last_camera_id = camera_id
+        remaining = self.motion_suppressor.remaining(camera_id) if self.motion_suppressor else 0.0
+        if remaining > 0:
             LOG.info(
-                "MQTT: notification received topic=%s camera=%s event=%s bytes=%d",
-                message.topic, camera_id, event, len(message.payload),
+                "Webhook: motion suppressed after PTZ camera=%s remaining_seconds=%.2f",
+                camera_id, remaining,
             )
-            if event != "motion":
-                LOG.info("MQTT: notification ignored topic=%s camera=%s event=%s", message.topic, camera_id, event)
-                return
-            configured = self.config_getter().camera(camera_id)
-            if configured.mqtt_topic and configured.mqtt_topic != message.topic:
-                raise ValueError("topic does not match camera configuration")
-            remaining = self.motion_suppressor.remaining(camera_id) if self.motion_suppressor else 0.0
-            if remaining > 0:
-                LOG.info(
-                    "MQTT: motion suppressed after PTZ camera=%s remaining_seconds=%.2f",
-                    camera_id, remaining,
-                )
-                return
-            timestamp = str(payload.get("timestamp", ""))
-            source_key = f"{message.topic}:{timestamp}:{event}"
-            asyncio.run_coroutine_threadsafe(
-                self._trigger_and_log(camera_id, source_key, timestamp), self.loop,
-            )
+            return {"duplicate": True, "suppressed": True}
+        try:
+            result = await self.trigger(camera_id, "webhook", source_key=str(uuid.uuid4()), triggered_at=received_at)
         except Exception as exc:
             self.last_error = str(exc)
-            LOG.warning("MQTT: notification rejected topic=%s error=%s", message.topic, exc)
-
-    async def _trigger_and_log(self, camera_id: str, source_key: str, timestamp: str) -> None:
-        try:
-            result = await self.trigger(camera_id, "mqtt", source_key=source_key, triggered_at=timestamp)
-            if result.get("duplicate"):
-                LOG.info("MQTT: duplicate trigger ignored camera=%s", camera_id)
-            else:
-                LOG.info("MQTT: trigger routed camera=%s event=%s", camera_id, result.get("id", "unknown"))
-        except Exception as exc:
-            self.last_error = str(exc)
-            LOG.exception("MQTT: trigger failed camera=%s error=%s", camera_id, exc)
-
-
-class OnvifEventSource:
-    def __init__(self, config_getter: Callable[[], AppConfig], trigger: Trigger):
-        self.config_getter = config_getter
-        self.trigger = trigger
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self.stop_event = threading.Event()
-        self.threads: list[threading.Thread] = []
-        self.health: dict[str, dict[str, Any]] = {}
-
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.loop = loop
-        self.stop_event.clear()
-        for camera in self.config_getter().cameras:
-            if camera.adapter == "onvif" and camera.enabled and not camera.needs_credentials:
-                thread = threading.Thread(target=self._worker, args=(camera,), daemon=True, name=f"onvif-{camera.id}")
-                self.threads.append(thread)
-                thread.start()
-
-    def stop(self) -> None:
-        self.stop_event.set()
-        for thread in self.threads:
-            thread.join(timeout=2)
-        self.threads.clear()
-
-    def _worker(self, camera: CameraConfig) -> None:
-        while not self.stop_event.is_set():
-            try:
-                from onvif import ONVIFCamera
-                client = ONVIFCamera(camera.host, camera.onvif_port, camera.username, camera.password)
-                pullpoint = client.create_pullpoint_service()
-                self.health[camera.id] = {"connected": True, "error": ""}
-                LOG.info("ONVIF: event subscription connected camera=%s", camera.id)
-                while not self.stop_event.is_set():
-                    response = pullpoint.PullMessages({"Timeout": "PT20S", "MessageLimit": 32})
-                    for notification in getattr(response, "NotificationMessage", []) or []:
-                        if _notification_is_motion(notification):
-                            source_key = _notification_key(camera.id, notification)
-                            LOG.info("ONVIF: motion notification received camera=%s", camera.id)
-                            if self.loop:
-                                asyncio.run_coroutine_threadsafe(
-                                    self._trigger_and_log(camera.id, source_key), self.loop,
-                                )
-            except Exception as exc:
-                self.health[camera.id] = {"connected": False, "error": str(exc)}
-                LOG.warning("ONVIF: event worker camera=%s error=%s", camera.id, exc)
-                self.stop_event.wait(10)
-
-    async def _trigger_and_log(self, camera_id: str, source_key: str) -> None:
-        try:
-            result = await self.trigger(camera_id, "onvif", source_key=source_key, triggered_at=None)
-            if result.get("duplicate"):
-                LOG.info("ONVIF: duplicate trigger ignored camera=%s", camera_id)
-            else:
-                LOG.info("ONVIF: trigger routed camera=%s event=%s", camera_id, result.get("id", "unknown"))
-        except Exception as exc:
-            self.health[camera_id] = {"connected": False, "error": str(exc)}
-            LOG.exception("ONVIF: trigger failed camera=%s error=%s", camera_id, exc)
-
-
-def _notification_is_motion(notification: Any) -> bool:
-    text = str(notification).lower()
-    if "motion" not in text and "videoanalytics" not in text:
-        return False
-    return any(marker in text for marker in ("value': 'true", "value=true", ">true<", "isMotion=true".lower()))
-
-
-def _notification_key(camera_id: str, notification: Any) -> str:
-    value = str(notification)
-    return f"{camera_id}:{hashlib.sha256(value.encode()).hexdigest()}"
-
-
-def _camera_from_topic(topic: str) -> str:
-    parts = topic.split("/")
-    if len(parts) == 4 and parts[:2] == ["camdash", "cameras"] and parts[3] == "motion":
-        return parts[2]
-    raise ValueError("invalid motion topic")
+            raise
+        self.last_error = ""
+        if result.get("duplicate"):
+            LOG.info("Webhook: duplicate trigger ignored camera=%s", camera_id)
+        else:
+            LOG.info("Webhook: trigger routed camera=%s event=%s", camera_id, result.get("id", "unknown"))
+        return result

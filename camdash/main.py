@@ -8,6 +8,7 @@ from logging.handlers import RotatingFileHandler
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -31,7 +32,7 @@ from .capture import CaptureManager, safe_unlink
 from . import analyzer
 from .config import AppConfig, CameraConfig, load_config, merge_public_update, public_config, save_config
 from .db import Database
-from .event_sources import MotionSuppressor, MqttSource, OnvifEventSource
+from .event_sources import MotionSuppressor, WebhookSource
 from .mjpeg import MjpegRelay, multipart_frame
 
 
@@ -127,8 +128,7 @@ class AppState:
             self.db, lambda: self.config, self.broadcast, self.config_path.parent / "alerts.yaml"
         )
         self.motion_suppressor = MotionSuppressor()
-        self.mqtt = MqttSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
-        self.onvif = OnvifEventSource(lambda: self.config, self.capture.trigger)
+        self.webhook = WebhookSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
         self.retention_task: asyncio.Task | None = None
         self.hls: dict[str, tuple[asyncio.subprocess.Process, Path]] = {}
         self.mjpeg_relays: dict[tuple[str, bool], MjpegRelay] = {}
@@ -138,35 +138,21 @@ class AppState:
             (self.config.root / name).mkdir(parents=True, exist_ok=True)
 
     async def start(self) -> None:
-        loop = asyncio.get_running_loop()
-        self.mqtt.start(loop)
-        self.onvif.start(loop)
         self.retention_task = asyncio.create_task(self._retention_loop())
         LOG.info("CAM Dashboard started")
 
     async def stop(self) -> None:
-        self.mqtt.stop()
-        self.onvif.stop()
         if self.retention_task:
             self.retention_task.cancel()
         for camera_id in list(self.hls):
             await self.stop_hls(camera_id)
-        for relay in self.mjpeg_relays.values():
-            relay.close()
-        self.mjpeg_relays.clear()
+        self.close_mjpeg_relays()
         self.db.close()
 
-    async def restart_sources(self) -> None:
-        self.mqtt.stop()
-        self.onvif.stop()
+    def close_mjpeg_relays(self) -> None:
         for relay in self.mjpeg_relays.values():
             relay.close()
         self.mjpeg_relays.clear()
-        self.mqtt = MqttSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
-        self.onvif = OnvifEventSource(lambda: self.config, self.capture.trigger)
-        loop = asyncio.get_running_loop()
-        self.mqtt.start(loop)
-        self.onvif.start(loop)
 
     async def broadcast(self, event: dict[str, Any]) -> None:
         for queue in list(self.listeners):
@@ -263,8 +249,13 @@ def state() -> AppState:
 async def status():
     s = state()
     return {
-        "ok": True, "version": "0.1.0", "mqtt": {"connected": s.mqtt.connected, "error": s.mqtt.last_error},
-        "onvif": s.onvif.health, "captures": {key: value[0] for key, value in s.capture.inflight.items()},
+        "ok": True, "version": "0.1.0",
+        "webhook": {
+            "last_received_at": s.webhook.last_received_at,
+            "last_camera_id": s.webhook.last_camera_id,
+            "error": s.webhook.last_error,
+        },
+        "captures": {key: value[0] for key, value in s.capture.inflight.items()},
         "camera_count": len(s.config.cameras),
     }
 
@@ -317,7 +308,7 @@ async def put_settings(payload: dict[str, Any] = Body(...)):
         save_config(updated, s.config_path)
         s.config = updated
         s.capture.alerts = AlertEngine(s.config_path.parent / "alerts.yaml")
-        await s.restart_sources()
+        s.close_mjpeg_relays()
         await s.broadcast({"type": "settings_update"})
         return settings_payload(updated, s.config_path)
     except (ValueError, TypeError) as exc:
@@ -489,6 +480,20 @@ async def manual_snapshot(camera_id: str):
 async def manual_clip(camera_id: str, seconds: int = Query(30, ge=1, le=3600)):
     try:
         event = await state().capture.trigger(camera_id, "manual", source_key=str(uuid.uuid4()), snapshots=1, video_seconds=seconds)
+        return JSONResponse(event, status_code=202)
+    except (KeyError, CameraError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/webhooks/surveillance/{camera_id}")
+async def surveillance_webhook(camera_id: str, request: Request, secret: str | None = None):
+    s = state()
+    configured = s.config.webhook.shared_secret
+    if not configured or not secret or not secrets.compare_digest(secret, configured):
+        raise HTTPException(401, "invalid webhook secret")
+    body = await request.body()
+    try:
+        event = await s.webhook.handle(camera_id, body, request.headers.get("content-type", ""))
         return JSONResponse(event, status_code=202)
     except (KeyError, CameraError) as exc:
         raise HTTPException(409, str(exc)) from exc

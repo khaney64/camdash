@@ -12,7 +12,7 @@ import yaml
 
 
 CAMERA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
-SECRET_FIELDS = {"password", "token", "mqtt_password"}
+SECRET_FIELDS = {"password", "token"}
 
 
 @dataclass(slots=True)
@@ -34,13 +34,8 @@ class RetentionConfig:
 
 
 @dataclass(slots=True)
-class MqttConfig:
-    host: str = "mqtt.example.internal"
-    port: int = 1884
-    username: str = ""
-    password: str = ""
-    topic: str = "camdash/cameras/+/motion"
-    tls: bool = False
+class WebhookConfig:
+    shared_secret: str = ""
 
 
 @dataclass(slots=True)
@@ -83,7 +78,6 @@ class CameraConfig:
     mjpeg_main: str = ""
     mjpeg_sub: str = ""
     record_stream: str = "main"
-    mqtt_topic: str = ""
     prompt_override: str = ""
     ptz: bool = False
     sd_redundancy: bool = False
@@ -106,7 +100,7 @@ class AppConfig:
     data_dir: str = "~/.camdash"
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
-    mqtt: MqttConfig = field(default_factory=MqttConfig)
+    webhook: WebhookConfig = field(default_factory=WebhookConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     cameras: list[CameraConfig] = field(default_factory=list)
 
@@ -137,7 +131,7 @@ def load_config(path: Path | None = None) -> tuple[AppConfig, Path]:
         data_dir=str(raw.get("data_dir", "~/.camdash")),
         capture=_dataclass_from(CaptureConfig, raw.get("capture")),
         retention=_dataclass_from(RetentionConfig, raw.get("retention")),
-        mqtt=_dataclass_from(MqttConfig, raw.get("mqtt")),
+        webhook=_dataclass_from(WebhookConfig, raw.get("webhook")),
         analysis=_dataclass_from(AnalysisConfig, raw.get("analysis")),
         cameras=[_dataclass_from(CameraConfig, item) for item in raw.get("cameras", [])],
     )
@@ -159,8 +153,6 @@ def _validate(cfg: AppConfig) -> None:
     for value in (cfg.capture.day_video_seconds, cfg.capture.night_video_seconds):
         if not 1 <= value <= 3600:
             raise ValueError("video duration must be between 1 and 3600 seconds")
-    if cfg.mqtt.port not in range(1, 65536):
-        raise ValueError("invalid MQTT port")
     if not 0 <= cfg.analysis.alert_cooldown_minutes <= 1440:
         raise ValueError("alert cooldown must be between 0 and 1440 minutes")
     if cfg.analysis.backend not in {"llm", "anthropic"}:
@@ -196,7 +188,7 @@ def save_config(cfg: AppConfig, path: Path) -> None:
 
 def public_config(cfg: AppConfig) -> dict[str, Any]:
     result = asdict(cfg)
-    result["mqtt"]["has_password"] = bool(result["mqtt"].pop("password", ""))
+    result["webhook"]["has_secret"] = bool(result["webhook"].pop("shared_secret", ""))
     for camera in result["cameras"]:
         for key in ("password", "token"):
             camera[f"has_{key}"] = bool(camera.pop(key, ""))
@@ -211,11 +203,11 @@ def merge_public_update(current: AppConfig, data: dict[str, Any]) -> AppConfig:
     for section in ("capture", "retention", "analysis"):
         if isinstance(data.get(section), dict):
             raw[section].update(data[section])
-    if isinstance(data.get("mqtt"), dict):
-        password = raw["mqtt"].get("password", "")
-        raw["mqtt"].update({k: v for k, v in data["mqtt"].items() if k != "has_password"})
-        if not data["mqtt"].get("password"):
-            raw["mqtt"]["password"] = password
+    if isinstance(data.get("webhook"), dict):
+        shared_secret = raw["webhook"].get("shared_secret", "")
+        raw["webhook"].update({k: v for k, v in data["webhook"].items() if k != "has_secret"})
+        if not data["webhook"].get("shared_secret"):
+            raw["webhook"]["shared_secret"] = shared_secret
     if "timezone" in data:
         raw["timezone"] = data["timezone"]
     if isinstance(data.get("cameras"), list):
@@ -235,7 +227,7 @@ def merge_public_update(current: AppConfig, data: dict[str, Any]) -> AppConfig:
         timezone=raw["timezone"], data_dir=raw["data_dir"],
         capture=_dataclass_from(CaptureConfig, raw["capture"]),
         retention=_dataclass_from(RetentionConfig, raw["retention"]),
-        mqtt=_dataclass_from(MqttConfig, raw["mqtt"]),
+        webhook=_dataclass_from(WebhookConfig, raw["webhook"]),
         analysis=_dataclass_from(AnalysisConfig, raw["analysis"]),
         cameras=[_dataclass_from(CameraConfig, c) for c in raw["cameras"]],
     )

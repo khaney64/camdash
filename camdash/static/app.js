@@ -29,7 +29,12 @@ async function showTab(tab) {
 }
 
 async function loadStatus() {
-  try { const data=await api('/api/status'); const el=$('service-status'); el.textContent=data.mqtt.connected?'MQTT online':(data.mqtt.error?'MQTT offline':'MQTT connecting'); el.className='status-pill '+(data.mqtt.connected?'online':'offline'); }
+  try {
+    const data=await api('/api/status'); const el=$('service-status'); const wh=data.webhook||{};
+    if (wh.error) { el.textContent='Webhook error: '+wh.error; el.className='status-pill offline'; }
+    else if (wh.last_received_at) { el.textContent='Webhook: last event '+formatTime(wh.last_received_at); el.className='status-pill online'; }
+    else { el.textContent='Webhook: no events yet'; el.className='status-pill offline'; }
+  }
   catch { $('service-status').textContent='Server offline'; $('service-status').className='status-pill offline'; }
 }
 async function loadCameras() {
@@ -142,7 +147,12 @@ async function ptz(command,coarse=false){if(!S.liveCamera)return;try{await api(`
 async function manualCapture(kind){const id=$('live-camera').value;if(!id)return;try{await api(`/api/cameras/${id}/capture/${kind}`,{method:'POST'});toast(kind==='clip'?'Recording started':'Snapshot started');}catch(e){toast(e.message,true)}}
 
 async function loadSettings() {
-  try { S.settings=await api('/api/settings'); S.cameras=S.settings.cameras; fillForm('capture-settings',S.settings.capture); fillForm('retention-settings',{...S.settings.retention,mqtt_host:S.settings.mqtt.host,mqtt_port:S.settings.mqtt.port,mqtt_username:S.settings.mqtt.username}); fillForm('analysis-settings',S.settings.analysis); renderAnalysisSettings(); renderAlertSettings(); renderCameraSettings(); }
+  try {
+    S.settings=await api('/api/settings'); S.cameras=S.settings.cameras;
+    fillForm('capture-settings',S.settings.capture); fillForm('retention-settings',S.settings.retention);
+    $('retention-settings').elements.namedItem('webhook_shared_secret').placeholder=S.settings.webhook.has_secret?'Configured; leave blank to keep':'';
+    fillForm('analysis-settings',S.settings.analysis); renderAnalysisSettings(); renderAlertSettings(); renderCameraSettings();
+  }
   catch(e){toast(e.message,true)}
 }
 function fillForm(id,data){const form=$(id);for(const [key,value] of Object.entries(data)){const input=form.elements.namedItem(key);if(!input)continue;if(input.type==='checkbox')input.checked=Boolean(value);else input.value=value??'';}}
@@ -172,7 +182,7 @@ function renderCameraSettings(){
   $('camera-settings').innerHTML=S.cameras.map((c,i)=>`<form class="camera-form panel" data-index="${i}"><div class="camera-form-head"><h3>${esc(c.name||'New camera')}</h3><button type="button" class="button danger" data-remove-camera="${i}">Remove</button></div><div class="field-grid">
     ${field('id','Camera ID',c.id)}${field('name','Display name',c.name)}${field('host','Host or IP',c.host)}<label>Adapter<select name="adapter"><option value="thingino" ${c.adapter==='thingino'?'selected':''}>Thingino</option><option value="onvif" ${c.adapter==='onvif'?'selected':''}>ONVIF</option></select></label>
     ${field('onvif_port','ONVIF port',c.onvif_port,'number')}${field('username','Username',c.username)}${field('password','Password','','password',c.has_password?'Configured; leave blank to keep':'')}${field('token','HTTP token','','password',c.has_token?'Configured; leave blank to keep':'')}
-    ${field('mqtt_topic','MQTT topic',c.mqtt_topic)}<label>Recording stream<select name="record_stream"><option value="main" ${c.record_stream!=='sub'?'selected':''}>Main (ch0)</option><option value="sub" ${c.record_stream==='sub'?'selected':''}>Sub (ch1)</option></select></label>${field('prompt_override','Prompt override',c.prompt_override,'textarea')}
+    <label>Recording stream<select name="record_stream"><option value="main" ${c.record_stream!=='sub'?'selected':''}>Main (ch0)</option><option value="sub" ${c.record_stream==='sub'?'selected':''}>Sub (ch1)</option></select></label>${field('prompt_override','Prompt override',c.prompt_override,'textarea')}
     <label class="switch"><input name="enabled" type="checkbox" ${c.enabled?'checked':''}><span>Enabled</span></label><label class="switch"><input name="needs_credentials" type="checkbox" ${c.needs_credentials?'checked':''}><span>Needs credentials</span></label><label class="switch"><input name="ptz" type="checkbox" ${c.ptz?'checked':''}><span>PTZ</span></label><label class="switch"><input name="sd_redundancy" type="checkbox" ${c.sd_redundancy?'checked':''}><span>SD redundancy</span></label>
     </div><div class="camera-actions"><button type="button" class="button" data-probe-camera="${esc(c.id)}">Probe ONVIF</button><button type="button" class="button" data-sd-camera="${esc(c.id)}">Check SD</button>${c.adapter==='thingino'&&c.ptz?`<button type="button" class="button" data-motor-status="${esc(c.id)}">Check motors</button><span class="message motor-health" data-motor-result="${esc(c.id)}">Checking motors…</span>`:''}<span class="message" data-camera-result="${esc(c.id)}"></span></div></form>`).join('');
   refreshMotorStatuses();
@@ -181,13 +191,13 @@ function field(name,label,value,type='text',placeholder=''){if(type==='textarea'
 function collectCameras(){return [...document.querySelectorAll('.camera-form')].map(form=>{const prior=S.cameras[Number(form.dataset.index)]||{};const result={...prior};for(const el of form.elements){if(!el.name)continue;let value=el.type==='checkbox'?el.checked:el.value;if(el.type==='number')value=Number(value);if((el.name==='password'||el.name==='token')&&!value)continue;result[el.name]=value;}return result;});}
 async function saveSettings(){
   const capture=formData('capture-settings'),retentionRaw=formData('retention-settings'),analysis={...formData('analysis-settings'),...collectAlertSettings()};
-  const mqtt={...S.settings.mqtt,host:retentionRaw.mqtt_host,port:retentionRaw.mqtt_port,username:retentionRaw.mqtt_username};if(retentionRaw.mqtt_password)mqtt.password=retentionRaw.mqtt_password;
+  const webhook={...S.settings.webhook};if(retentionRaw.webhook_shared_secret)webhook.shared_secret=retentionRaw.webhook_shared_secret;
   const retention={days:retentionRaw.days,max_gb:retentionRaw.max_gb,interval_minutes:S.settings.retention.interval_minutes};
-  try{S.settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({timezone:S.settings.timezone,capture,retention,mqtt,analysis,cameras:collectCameras()})});$('settings-message').textContent='Settings saved and event sources restarted.';$('settings-message').className='message success';$('analysis-settings-message').textContent='Analysis settings saved';$('alert-settings-message').textContent='Alert settings saved';await loadCameras();renderAnalysisSettings();renderAlertSettings();renderCameraSettings();const eventId=$('event-detail').dataset.eventId;if(eventId&&$('event-dialog').open)await openEvent(eventId);}
+  try{S.settings=await api('/api/settings',{method:'PUT',body:JSON.stringify({timezone:S.settings.timezone,capture,retention,webhook,analysis,cameras:collectCameras()})});$('settings-message').textContent='Settings saved.';$('settings-message').className='message success';$('analysis-settings-message').textContent='Analysis settings saved';$('alert-settings-message').textContent='Alert settings saved';await loadCameras();renderAnalysisSettings();renderAlertSettings();renderCameraSettings();const eventId=$('event-detail').dataset.eventId;if(eventId&&$('event-dialog').open)await openEvent(eventId);}
   catch(e){$('settings-message').textContent=e.message;$('settings-message').className='message error';}
 }
 async function discoverCameras(){const out=$('discovery-results');out.textContent='Scanning…';try{const data=await api('/api/cameras/discover',{method:'POST'});out.textContent=data.devices.length?data.devices.map(d=>`${d.host} ${d.scopes.join(' ')}`).join('\n'):'No ONVIF devices answered.';}catch(e){out.textContent=e.message;out.className='message error';}}
-function addCamera(){S.cameras.push({id:'new-camera',name:'New camera',host:'',adapter:'onvif',enabled:false,needs_credentials:true,onvif_port:80,username:'',mqtt_topic:'',record_stream:'main',prompt_override:'',ptz:false,sd_redundancy:false,capture:{}});renderCameraSettings();}
+function addCamera(){S.cameras.push({id:'new-camera',name:'New camera',host:'',adapter:'onvif',enabled:false,needs_credentials:true,onvif_port:80,username:'',record_stream:'main',prompt_override:'',ptz:false,sd_redundancy:false,capture:{}});renderCameraSettings();}
 async function probeCamera(id){const out=document.querySelector(`[data-camera-result="${CSS.escape(id)}"]`);out.textContent='Probing…';try{const data=await api(`/api/cameras/${id}/probe`);out.textContent=data.ok?`Services: ${data.services.join(', ')}`:data.error;}catch(e){out.textContent=e.message;}}
 async function checkSd(id){const out=document.querySelector(`[data-camera-result="${CSS.escape(id)}"]`);out.textContent='Checking SD…';try{const data=await api(`/api/cameras/${id}/sd`);out.textContent=data.supported?(data.mounted===false?'SD not mounted':'SD reachable'):'Not supported';}catch(e){out.textContent=e.message;}}
 function showMotorStatus(id,data){const out=document.querySelector(`[data-motor-result="${CSS.escape(id)}"]`);if(!out)return;out.className='message motor-health '+(data.healthy?'success':'error');if(data.healthy){const motor=data.motor||{};out.textContent=`Motors healthy · ${motor.status==='1'?'moving':'idle'} · ${motor.xpos??'?'} × ${motor.ypos??'?'}`;}else{out.textContent=(data.error||'Motor check failed')+(data.requires_reboot?' · camera reboot required':'');}}

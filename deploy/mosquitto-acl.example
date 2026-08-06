@@ -1,9 +1,0 @@
-user camdash-service
-topic read camdash/cameras/+/motion
-
-user camdash-camera-1
-topic write camdash/cameras/camera-1/motion
-
-user camdash-camera-2
-topic write camdash/cameras/camera-2/motion
-

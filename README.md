@@ -41,7 +41,7 @@ The Settings page exposes the Gardepro-style alert controls: global enablement, 
 
 "Remove empty images" deletes the whole event (clip and all snapshots) when analysis finds nothing at all — useful for cameras whose own IR/night-vision LEDs occasionally trigger motion detection with nothing actually in frame. The initial snapshots are checked first; only if those come up empty does CAM Dashboard extract and analyze additional frames from the recorded clip at the configured scan interval (default every 5 seconds) before deciding the event is truly empty, so a subject that's only visible partway through the clip isn't mistakenly discarded.
 
-Analysis settings expose backend-specific model fields, prompt, maximum output tokens, thinking budget (zero disables thinking), temperature, and image chat. Empty responses and results whose detections all have confidence 3 or lower are retried once with twice the configured thinking budget; the configured value is not changed.
+Analysis settings expose backend-specific model fields, prompt, maximum output tokens, thinking budget (zero disables thinking), temperature, and image chat. Invalid responses (empty, truncated, or non-JSON — the model failed to produce usable output) and results whose detections all have confidence 3 or lower are each retried once with twice the configured thinking budget; the configured value is not changed. A well-formed response reporting no detections is not retried — it's a valid result, not a failure.
 
 Camera passwords, HTTP tokens, the webhook shared secret, private addresses, and personal notification settings must never be committed. The Settings API masks stored secrets and preserves them when a password field is left blank.
 

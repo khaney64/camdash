@@ -38,6 +38,8 @@ from .mjpeg import MjpegRelay, multipart_frame
 
 PTZ_MOTION_SUPPRESSION_SECONDS = 5.0
 MJPEG_QUEUE_WAIT_SECONDS = 1.0
+HLS_IDLE_TIMEOUT_SECONDS = 30.0
+HLS_IDLE_CHECK_INTERVAL_SECONDS = 10.0
 
 
 class RingHandler(logging.Handler):
@@ -130,7 +132,9 @@ class AppState:
         self.motion_suppressor = MotionSuppressor()
         self.webhook = WebhookSource(lambda: self.config, self.capture.trigger, self.motion_suppressor)
         self.retention_task: asyncio.Task | None = None
+        self.hls_idle_task: asyncio.Task | None = None
         self.hls: dict[str, tuple[asyncio.subprocess.Process, Path]] = {}
+        self.hls_last_accessed: dict[str, float] = {}
         self.mjpeg_relays: dict[tuple[str, bool], MjpegRelay] = {}
 
     def _prepare_dirs(self) -> None:
@@ -139,11 +143,14 @@ class AppState:
 
     async def start(self) -> None:
         self.retention_task = asyncio.create_task(self._retention_loop())
+        self.hls_idle_task = asyncio.create_task(self._hls_idle_loop())
         LOG.info("CAM Dashboard started")
 
     async def stop(self) -> None:
         if self.retention_task:
             self.retention_task.cancel()
+        if self.hls_idle_task:
+            self.hls_idle_task.cancel()
         for camera_id in list(self.hls):
             await self.stop_hls(camera_id)
         self.close_mjpeg_relays()
@@ -173,7 +180,26 @@ class AppState:
                 LOG.exception("retention pass failed")
             await asyncio.sleep(max(60, self.config.retention.interval_minutes * 60))
 
+    async def _hls_idle_loop(self) -> None:
+        while True:
+            await asyncio.sleep(HLS_IDLE_CHECK_INTERVAL_SECONDS)
+            await self._reap_idle_hls()
+
+    async def _reap_idle_hls(self) -> None:
+        now = time.monotonic()
+        idle = [
+            camera_id for camera_id, last in list(self.hls_last_accessed.items())
+            if camera_id in self.hls and now - last > HLS_IDLE_TIMEOUT_SECONDS
+        ]
+        for camera_id in idle:
+            LOG.info("HLS: stopping camera=%s after %.0fs idle", camera_id, HLS_IDLE_TIMEOUT_SECONDS)
+            await self.stop_hls(camera_id)
+
+    def touch_hls(self, camera_id: str) -> None:
+        self.hls_last_accessed[camera_id] = time.monotonic()
+
     async def start_hls(self, camera_id: str, main: bool = False) -> dict[str, Any]:
+        self.touch_hls(camera_id)
         if camera_id in self.hls and self.hls[camera_id][0].returncode is None:
             return {"active": True, "playlist": f"/api/cameras/{camera_id}/hls/index.m3u8"}
         camera = self.config.camera(camera_id)
@@ -193,6 +219,7 @@ class AppState:
         return {"active": True, "playlist": f"/api/cameras/{camera_id}/hls/index.m3u8"}
 
     async def stop_hls(self, camera_id: str) -> None:
+        self.hls_last_accessed.pop(camera_id, None)
         current = self.hls.pop(camera_id, None)
         if current:
             process, directory = current
@@ -460,7 +487,9 @@ async def hls_stop(camera_id: str):
 async def hls_file(camera_id: str, filename: str):
     if Path(filename).name != filename or not filename.endswith((".m3u8", ".ts")):
         raise HTTPException(400, "invalid HLS filename")
-    path = state().config.root / "hls" / camera_id / filename
+    s = state()
+    s.touch_hls(camera_id)
+    path = s.config.root / "hls" / camera_id / filename
     if not path.exists():
         raise HTTPException(404, "HLS segment not ready")
     return FileResponse(path, media_type="application/vnd.apple.mpegurl" if filename.endswith(".m3u8") else "video/mp2t",

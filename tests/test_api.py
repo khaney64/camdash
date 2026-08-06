@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pathlib import Path
 from queue import Empty
 
@@ -55,6 +56,70 @@ def test_gallery_uses_in_app_delete_confirmation_and_media_lightbox():
 def test_mjpeg_proxy_uses_shared_relay():
     source = (Path(__file__).parents[1] / "camdash" / "main.py").read_text(encoding="utf-8")
     assert "s.mjpeg_relay(camera_id, hd)" in source
+
+
+def test_hls_file_route_touches_last_accessed():
+    source = (Path(__file__).parents[1] / "camdash" / "main.py").read_text(encoding="utf-8")
+    assert "s.touch_hls(camera_id)" in source
+
+
+def test_reap_idle_hls_stops_camera_after_timeout(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    save_config(AppConfig(data_dir=str(tmp_path)), config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash import main
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.terminated = False
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        async def wait(self):
+            return self.returncode
+
+    state = main.AppState()
+    process = FakeProcess()
+    directory = tmp_path / "hls-camera"
+    directory.mkdir()
+    state.hls["cam"] = (process, directory)
+    state.hls_last_accessed["cam"] = time.monotonic() - (main.HLS_IDLE_TIMEOUT_SECONDS + 1)
+    try:
+        asyncio.run(state._reap_idle_hls())
+        assert process.terminated is True
+        assert "cam" not in state.hls
+        assert "cam" not in state.hls_last_accessed
+    finally:
+        state.db.close()
+
+
+def test_reap_idle_hls_leaves_recently_touched_camera_running(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    save_config(AppConfig(data_dir=str(tmp_path)), config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash import main
+
+    class FakeProcess:
+        returncode = None
+
+        def terminate(self):
+            raise AssertionError("should not stop a recently touched HLS session")
+
+    state = main.AppState()
+    directory = tmp_path / "hls-camera"
+    directory.mkdir()
+    state.hls["cam"] = (FakeProcess(), directory)
+    state.touch_hls("cam")
+    try:
+        asyncio.run(state._reap_idle_hls())
+        assert "cam" in state.hls
+    finally:
+        state.db.close()
 
 
 def test_close_mjpeg_relays_clears_all(tmp_path: Path, monkeypatch):

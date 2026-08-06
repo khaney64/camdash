@@ -1,0 +1,2 @@
+scripts/*.sh text eol=lf
+scripts/*.cgi text eol=lf

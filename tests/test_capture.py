@@ -4,8 +4,37 @@ from pathlib import Path
 import pytest
 
 from camdash.cameras import CameraError
-from camdash.capture import CaptureManager, _parse_timestamp, capture_profile, safe_unlink
+from camdash.capture import CaptureManager, _parse_timestamp, _select_alert_thumb, capture_profile, safe_unlink
 from camdash.config import AppConfig, CameraConfig, CaptureConfig
+
+
+def test_select_alert_thumb_prefers_media_with_a_detection():
+    media = [
+        {"thumb_path": "snap0.jpg", "analysis": {"detections": []}},
+        {"thumb_path": "video-frame-1.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
+        {"thumb_path": "video-frame-2.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
+    ]
+    assert _select_alert_thumb(media) == Path("video-frame-1.jpg")
+
+
+def test_select_alert_thumb_falls_back_to_first_thumb_when_none_have_detections():
+    media = [
+        {"thumb_path": "snap0.jpg", "analysis": {"detections": []}},
+        {"thumb_path": "snap1.jpg", "analysis": None},
+    ]
+    assert _select_alert_thumb(media) == Path("snap0.jpg")
+
+
+def test_select_alert_thumb_skips_media_without_a_thumb():
+    media = [
+        {"thumb_path": None, "analysis": {"detections": [{"label": "raccoon"}]}},
+        {"thumb_path": "snap1.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
+    ]
+    assert _select_alert_thumb(media) == Path("snap1.jpg")
+
+
+def test_select_alert_thumb_returns_none_when_no_media_has_a_thumb():
+    assert _select_alert_thumb([{"thumb_path": None, "analysis": None}]) is None
 
 
 def test_day_night_and_camera_override(tmp_path: Path):

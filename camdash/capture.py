@@ -334,8 +334,8 @@ class CaptureManager:
             return "person_only"
         event_with_analysis = self.db.get_event(event["id"]) or event
         if cfg.analysis.alerts_enabled:
-            first = next((Path(m["thumb_path"]) for m in all_media if m.get("thumb_path")), None)
-            alert = await asyncio.to_thread(self.alerts.evaluate, event_with_analysis, first,
+            thumb = _select_alert_thumb(event_with_analysis.get("media", []))
+            alert = await asyncio.to_thread(self.alerts.evaluate, event_with_analysis, thumb,
                                             cfg.analysis.alert_cooldown_minutes * 60,
                                             cfg.analysis.alert_rules_enabled)
             self.db.update_event(event["id"], alert_json=alert)
@@ -425,6 +425,14 @@ def _detection_summary(result: dict[str, Any]) -> str:
         if label:
             values.append(f"{label}/{name}" if name else label)
     return ", ".join(values) or "none"
+
+
+def _select_alert_thumb(media_list: list[dict[str, Any]]) -> Path | None:
+    with_detection = next(
+        (m for m in media_list if m.get("thumb_path") and (m.get("analysis") or {}).get("detections")), None,
+    )
+    chosen = with_detection or next((m for m in media_list if m.get("thumb_path")), None)
+    return Path(chosen["thumb_path"]) if chosen else None
 
 
 def capture_profile(cfg: AppConfig, camera: CameraConfig, timestamp: datetime) -> tuple[str, CaptureConfig]:

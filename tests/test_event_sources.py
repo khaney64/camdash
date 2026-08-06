@@ -10,7 +10,7 @@ def test_describe_payload_extracts_reported_camera_and_thumbnail():
     body = json.dumps({
         "time": "2023-02-01T15:05:39", "camera": "Camera01",
         "event": "Unknown license plate detected",
-        "thumbnail": "https://localcloud:5001/webapi/SurveillanceStation/Webhook/GetThumbnail/v1/example-0/x.jpg?v=1",
+        "thumbnail": "https://nas.example.lan:5001/webapi/SurveillanceStation/Webhook/GetThumbnail/v1/example-0/x.jpg?v=1",
     }).encode()
 
     description = _describe_payload(body)

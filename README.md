@@ -54,3 +54,126 @@ Camera passwords, HTTP tokens, the webhook shared secret, private addresses, and
 7. Enter ONVIF credentials for non-Thingino cameras in Settings, run Probe, and enable the camera only after media and event services succeed.
 
 The dashboard binds to port 8081 by default. It has no application login and must remain on a trusted LAN.
+
+## Running and monitoring the service
+
+CAM Dashboard runs as a single systemd service — one `uvicorn` process (see `deploy/camdash.service.example`). There's nothing else to manage: `ffmpeg`/`ffprobe` are invoked as short-lived subprocesses per recording or live-view session and clean themselves up automatically (including the idle timeout described above), not standalone services.
+
+```shell
+sudo systemctl status camdash    # current state, recent stdout/stderr
+sudo systemctl start camdash
+sudo systemctl stop camdash
+sudo systemctl restart camdash   # e.g. after a git pull or editing config.yaml by hand
+sudo systemctl enable camdash    # start on boot
+sudo systemctl disable camdash
+```
+
+Settings changes made through the Settings tab or `PUT /api/settings` take effect immediately — no restart needed. A restart is only required after pulling new code or editing `config.yaml` directly on disk.
+
+Logs are available three ways:
+- `journalctl -u camdash -f` — systemd journal (process lifecycle, stdout/stderr).
+- `~/.camdash/logs/camdash.log` — rotating application log (5 files x 5 MB); path follows the configured `data_dir` (default `~/.camdash`).
+- The in-app **Logs** tab — recent entries from the same log, viewable from the browser without shell access.
+
+## API reference
+
+Everything is under `/api` and unauthenticated except the Surveillance Station webhook (shared-secret query parameter) — there is no login, by design (see Deployment). All responses are JSON. Examples below use the placeholder cameras from `config.example.yaml` and a placeholder host/IP.
+
+### Status and live updates
+
+`GET /api/status` — health, webhook activity, and in-progress captures.
+```shell
+curl http://camdash-host:8081/api/status
+```
+```json
+{
+  "ok": true,
+  "version": "0.1.0",
+  "webhook": {"last_received_at": "2026-01-15T20:14:03+00:00", "last_camera_id": "patio-camera", "error": ""},
+  "captures": {},
+  "camera_count": 2
+}
+```
+
+`GET /api/updates` — Server-Sent Events stream the dashboard UI consumes for live updates (`event_created`, `capture_progress`, `analysis_update`, `alert_update`, `event_complete`, `event_deleted`, `settings_update`, `live`, `retention`). Intended for the browser client, not general scripting.
+
+### Cameras and live view
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/cameras` | List configured cameras, secrets masked. |
+| POST | `/api/cameras/discover` | ONVIF WS-Discovery scan of the local network. |
+| GET | `/api/cameras/{id}/probe` | ONVIF service/profile discovery for one camera. |
+| GET | `/api/cameras/{id}/sd` | SD-card redundancy status (Thingino only). |
+| POST | `/api/cameras/{id}/ptz` | Body `{"command": "left\|right\|up\|down\|up-left\|up-right\|down-left\|down-right\|center\|home", "coarse": false}`. |
+| GET | `/api/cameras/{id}/ptz/status` | Motor health (Thingino only). |
+| GET | `/api/cameras/{id}/live/info?hd=false` | Resolved RTSP URL and whether MJPEG/PTZ apply. |
+| GET | `/api/cameras/{id}/live.mjpg?hd=false` | MJPEG relay stream (multipart, for an `<img>` tag). |
+| POST | `/api/cameras/{id}/hls/start?hd=false` | Start HLS live view (cameras without an MJPEG endpoint). |
+| POST | `/api/cameras/{id}/hls/stop` | Stop it explicitly (also happens automatically after the idle timeout). |
+
+```shell
+curl http://camdash-host:8081/api/cameras
+```
+```json
+[
+  {
+    "id": "patio-camera", "name": "Patio Camera", "host": "192.0.2.10", "adapter": "thingino",
+    "enabled": true, "needs_credentials": false, "ptz": true, "record_stream": "sub",
+    "has_password": true, "has_token": true
+  }
+]
+```
+
+### Manual capture and events
+
+`POST /api/cameras/{id}/capture/snapshot` — trigger an immediate snapshot through the same pipeline as an automated event.
+```shell
+curl -X POST http://camdash-host:8081/api/cameras/patio-camera/capture/snapshot
+```
+```json
+{
+  "id": "e2b1c9a4-6f21-4e9d-8f7a-0c9d2b6a1234", "camera_id": "patio-camera", "camera_name": "Patio Camera",
+  "source": "manual", "status": "capturing", "profile": "day", "trigger_count": 1,
+  "triggered_at": "2026-01-15T20:14:03+00:00", "received_at": "2026-01-15T20:14:03+00:00",
+  "created_at": "2026-01-15T20:14:03+00:00"
+}
+```
+`POST /api/cameras/{id}/capture/clip?seconds=30` — same, plus a recorded clip.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/events?camera_id=&status=&q=&limit=50&offset=0` | Paginated event list. Response: `{"events": [...]}`. |
+| GET | `/api/events/{id}` | Single event, including its `media` list (snapshots/clip, each with `path`/`thumb_path`/`analysis`). |
+| DELETE | `/api/events/{id}` | Delete an event and its media files. |
+| GET | `/api/media/{id}/thumb` / `.../file` | Serve a thumbnail or original media file. |
+| POST | `/api/media/{id}/save` | Copy media into the Local tab (survives retention). |
+| POST | `/api/media/{id}/analyze` | Re-run image analysis for one media item. |
+| GET / POST | `/api/media/{id}/chat` | Ask a follow-up question about an already-analyzed image. |
+| GET | `/api/saved`, `/api/saved/{id}/thumb\|file` | Local tab's saved items. |
+| DELETE | `/api/saved/{id}` | Remove a saved item. |
+| GET / PUT | `/api/settings` | Full config; secrets masked on read, preserved on write when left blank. |
+| GET | `/api/logs` | Recent log lines backing the in-app Logs tab. |
+| POST | `/api/alerts/test` | Send a test alert email using the configured SMTP settings. |
+
+### Surveillance Station webhook
+
+`POST /api/webhooks/surveillance/{camera_id}?secret=<shared_secret>`
+
+The inbound trigger from a Synology Surveillance Station Action Rule (see Deployment). `{camera_id}` must match a camera's `id` in CAM Dashboard's config — **the camera is identified from the URL path, not the request body**, since Surveillance Station's payload schema differs across DSM versions and isn't reliably documented anywhere. The body can be anything, including empty; it's logged for diagnostics but never parsed as a requirement.
+
+```shell
+curl -X POST "http://camdash-host:8081/api/webhooks/surveillance/patio-camera?secret=changeme"
+```
+Response (`202`), same shape as manual capture, with `"source": "webhook"`. `401` if the secret is missing or wrong; `409` if the camera doesn't exist, is disabled, or still has `needs_credentials` set.
+
+A real Surveillance Station Action Rule call looks roughly like this (exact fields vary by DSM version and event type):
+```json
+{
+  "time": "2026-01-15T20:14:03",
+  "camera": "Patio Camera",
+  "event": "Motion detected",
+  "thumbnail": "https://nas.example.lan:5001/webapi/SurveillanceStation/Webhook/GetThumbnail/v1/<token>/thumbnail.jpg"
+}
+```
+`camera` is Surveillance Station's own display name for the camera, not necessarily CAM Dashboard's camera `id` — it's logged for diagnostics only, never used for routing. `thumbnail` is a pre-authenticated URL (the access token is embedded in the path itself, no separate API key needed); CAM Dashboard doesn't fetch it today, since it already records its own clip and snapshots independently once triggered.

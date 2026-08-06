@@ -333,8 +333,13 @@ class CaptureManager:
             LOG.info("Analysis: person-only event marked for removal camera=%s event=%s", camera.id, event["id"])
             return "person_only"
         event_with_analysis = self.db.get_event(event["id"]) or event
+        media_list = event_with_analysis.get("media", [])
+        primary = _select_detection_media(media_list)
+        if primary and primary.get("id") and primary["id"] != event_with_analysis.get("primary_media_id"):
+            self.db.update_event(event["id"], primary_media_id=primary["id"])
+            event_with_analysis["primary_media_id"] = primary["id"]
         if cfg.analysis.alerts_enabled:
-            thumb = _select_alert_thumb(event_with_analysis.get("media", []))
+            thumb = Path(primary["thumb_path"]) if primary and primary.get("thumb_path") else None
             alert = await asyncio.to_thread(self.alerts.evaluate, event_with_analysis, thumb,
                                             cfg.analysis.alert_cooldown_minutes * 60,
                                             cfg.analysis.alert_rules_enabled)
@@ -427,12 +432,11 @@ def _detection_summary(result: dict[str, Any]) -> str:
     return ", ".join(values) or "none"
 
 
-def _select_alert_thumb(media_list: list[dict[str, Any]]) -> Path | None:
+def _select_detection_media(media_list: list[dict[str, Any]]) -> dict[str, Any] | None:
     with_detection = next(
         (m for m in media_list if m.get("thumb_path") and (m.get("analysis") or {}).get("detections")), None,
     )
-    chosen = with_detection or next((m for m in media_list if m.get("thumb_path")), None)
-    return Path(chosen["thumb_path"]) if chosen else None
+    return with_detection or next((m for m in media_list if m.get("thumb_path")), None)
 
 
 def capture_profile(cfg: AppConfig, camera: CameraConfig, timestamp: datetime) -> tuple[str, CaptureConfig]:

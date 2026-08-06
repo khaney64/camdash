@@ -4,37 +4,37 @@ from pathlib import Path
 import pytest
 
 from camdash.cameras import CameraError
-from camdash.capture import CaptureManager, _parse_timestamp, _select_alert_thumb, capture_profile, safe_unlink
+from camdash.capture import CaptureManager, _parse_timestamp, _select_detection_media, capture_profile, safe_unlink
 from camdash.config import AppConfig, CameraConfig, CaptureConfig
 
 
-def test_select_alert_thumb_prefers_media_with_a_detection():
+def test_select_detection_media_prefers_media_with_a_detection():
     media = [
-        {"thumb_path": "snap0.jpg", "analysis": {"detections": []}},
-        {"thumb_path": "video-frame-1.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
-        {"thumb_path": "video-frame-2.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
+        {"id": "m0", "thumb_path": "snap0.jpg", "analysis": {"detections": []}},
+        {"id": "m1", "thumb_path": "video-frame-1.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
+        {"id": "m2", "thumb_path": "video-frame-2.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
     ]
-    assert _select_alert_thumb(media) == Path("video-frame-1.jpg")
+    assert _select_detection_media(media)["id"] == "m1"
 
 
-def test_select_alert_thumb_falls_back_to_first_thumb_when_none_have_detections():
+def test_select_detection_media_falls_back_to_first_thumb_when_none_have_detections():
     media = [
-        {"thumb_path": "snap0.jpg", "analysis": {"detections": []}},
-        {"thumb_path": "snap1.jpg", "analysis": None},
+        {"id": "m0", "thumb_path": "snap0.jpg", "analysis": {"detections": []}},
+        {"id": "m1", "thumb_path": "snap1.jpg", "analysis": None},
     ]
-    assert _select_alert_thumb(media) == Path("snap0.jpg")
+    assert _select_detection_media(media)["id"] == "m0"
 
 
-def test_select_alert_thumb_skips_media_without_a_thumb():
+def test_select_detection_media_skips_media_without_a_thumb():
     media = [
-        {"thumb_path": None, "analysis": {"detections": [{"label": "raccoon"}]}},
-        {"thumb_path": "snap1.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
+        {"id": "m0", "thumb_path": None, "analysis": {"detections": [{"label": "raccoon"}]}},
+        {"id": "m1", "thumb_path": "snap1.jpg", "analysis": {"detections": [{"label": "raccoon"}]}},
     ]
-    assert _select_alert_thumb(media) == Path("snap1.jpg")
+    assert _select_detection_media(media)["id"] == "m1"
 
 
-def test_select_alert_thumb_returns_none_when_no_media_has_a_thumb():
-    assert _select_alert_thumb([{"thumb_path": None, "analysis": None}]) is None
+def test_select_detection_media_returns_none_when_no_media_has_a_thumb():
+    assert _select_detection_media([{"id": "m0", "thumb_path": None, "analysis": None}]) is None
 
 
 def test_day_night_and_camera_override(tmp_path: Path):
@@ -91,6 +91,63 @@ async def test_person_only_analysis_requests_event_removal(tmp_path: Path, monke
         [{"id": "media-1", "path": str(tmp_path / "capture.jpg"), "thumb_path": None}],
     )
     assert remove == "person_only"
+
+
+@pytest.mark.asyncio
+async def test_analyze_promotes_media_with_detection_to_primary(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.analysis.enabled = True
+    camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1")
+
+    class FakeDatabase:
+        def __init__(self, media):
+            self.media = {m["id"]: dict(m) for m in media}
+            self.primary_media_id = None
+            self.event_analysis = None
+
+        def update_media(self, media_id, **values):
+            self.media[media_id].update(values)
+
+        def update_event(self, event_id, **values):
+            if "primary_media_id" in values:
+                self.primary_media_id = values["primary_media_id"]
+            if "analysis_json" in values:
+                self.event_analysis = values["analysis_json"]
+
+        def get_event(self, event_id):
+            media = [
+                {"id": m["id"], "thumb_path": m.get("thumb_path"), "analysis": m.get("analysis_json")}
+                for m in self.media.values()
+            ]
+            return {
+                "id": event_id, "camera_name": "Cam", "triggered_at": "now", "analysis": self.event_analysis,
+                "primary_media_id": self.primary_media_id, "media": media,
+            }
+
+    async def broadcast(_message):
+        pass
+
+    results = iter([
+        {"description": "nothing here", "detections": []},
+        {"description": "raccoon spotted", "detections": [{"label": "raccoon", "confidence": 9}]},
+    ])
+    monkeypatch.setattr("camdash.capture.analyzer.analyze_image", lambda *args: next(results))
+
+    database = FakeDatabase([
+        {"id": "media-0", "thumb_path": "snap0-thumb.jpg"},
+        {"id": "media-1", "thumb_path": "snap1-thumb.jpg"},
+    ])
+    manager = CaptureManager(database, lambda: cfg, broadcast)
+    remove = await manager._analyze(
+        {"id": "event-1", "camera_name": "Cam", "triggered_at": "now"},
+        camera,
+        [
+            {"id": "media-0", "path": "snap0.jpg", "thumb_path": "snap0-thumb.jpg"},
+            {"id": "media-1", "path": "snap1.jpg", "thumb_path": "snap1-thumb.jpg"},
+        ],
+    )
+    assert remove is None
+    assert database.primary_media_id == "media-1"
 
 
 @pytest.mark.asyncio

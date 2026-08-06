@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -52,8 +53,8 @@ class WebhookSource:
     async def handle(self, camera_id: str, raw_body: bytes, content_type: str) -> dict[str, Any]:
         received_at = datetime.now(timezone.utc).isoformat()
         LOG.info(
-            "Webhook: notification received camera=%s content_type=%s bytes=%d body=%r",
-            camera_id, content_type, len(raw_body), raw_body[:2000],
+            "Webhook: notification received camera=%s content_type=%s bytes=%d %s",
+            camera_id, content_type, len(raw_body), _describe_payload(raw_body),
         )
         self.last_received_at = received_at
         self.last_camera_id = camera_id
@@ -75,3 +76,17 @@ class WebhookSource:
         else:
             LOG.info("Webhook: trigger routed camera=%s event=%s", camera_id, result.get("id", "unknown"))
         return result
+
+
+def _describe_payload(raw_body: bytes) -> str:
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return f"body={raw_body[:2000]!r}"
+    if not isinstance(payload, dict):
+        return f"body={raw_body[:2000]!r}"
+    reported_camera = payload.get("camera") or payload.get("camera_name") or payload.get("deviceName")
+    return (
+        f"reported_camera={reported_camera!r} time={payload.get('time')!r} "
+        f"event={payload.get('event')!r} thumbnail={payload.get('thumbnail')!r}"
+    )

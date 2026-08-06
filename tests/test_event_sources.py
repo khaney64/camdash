@@ -1,7 +1,26 @@
+import json
+
 import pytest
 
 from camdash.config import AppConfig, CameraConfig
-from camdash.event_sources import MotionSuppressor, WebhookSource
+from camdash.event_sources import MotionSuppressor, WebhookSource, _describe_payload
+
+
+def test_describe_payload_extracts_reported_camera_and_thumbnail():
+    body = json.dumps({
+        "time": "2023-02-01T15:05:39", "camera": "Camera01",
+        "event": "Unknown license plate detected",
+        "thumbnail": "https://localcloud:5001/webapi/SurveillanceStation/Webhook/GetThumbnail/v1/example-0/x.jpg?v=1",
+    }).encode()
+
+    description = _describe_payload(body)
+
+    assert "reported_camera='Camera01'" in description
+    assert "GetThumbnail" in description
+
+
+def test_describe_payload_falls_back_for_non_json_body():
+    assert "body=" in _describe_payload(b"not json")
 
 
 def test_motion_suppressor_expires_per_camera():

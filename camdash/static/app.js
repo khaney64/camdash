@@ -47,7 +47,7 @@ async function loadCameras() {
 }
 function renderCameraChips(){
   $('gallery-camera-chips').innerHTML=S.cameras.map(c=>
-    `<button type="button" class="camera-chip ${c.enabled?'on':'off'}" data-toggle-camera="${esc(c.id)}" aria-pressed="${c.enabled}" title="${c.enabled?'Enabled':'Disabled'} — click to toggle">${esc(c.name)}</button>`
+    `<button type="button" class="camera-chip ${c.enabled?'on':'off'}" data-toggle-camera="${esc(c.id)}" aria-pressed="${c.enabled}" title="${c.enabled?'Enabled':'Disabled'} — click to toggle"><span class="camera-chip-dot"></span>${esc(c.name)}</button>`
   ).join('');
 }
 async function toggleCameraEnabled(id){

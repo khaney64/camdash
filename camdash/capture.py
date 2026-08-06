@@ -15,7 +15,7 @@ from PIL import Image
 
 from . import analyzer
 from .alerter import AlertEngine
-from .cameras import CameraError, adapter_for
+from .cameras import CameraDisabledError, CameraError, adapter_for
 from .config import AppConfig, CameraConfig, CaptureConfig
 from .db import Database, utcnow
 
@@ -38,8 +38,10 @@ class CaptureManager:
                       video_seconds: int | None = None) -> dict[str, Any]:
         cfg = self.config_getter()
         camera = cfg.camera(camera_id)
-        if not camera.enabled or camera.needs_credentials:
-            raise CameraError("camera is disabled or needs credentials")
+        if not camera.enabled:
+            raise CameraDisabledError("camera is disabled")
+        if camera.needs_credentials:
+            raise CameraError(f"{camera.name} needs credentials configured")
         if camera_id in self.inflight:
             event_id, _ = self.inflight[camera_id]
             self.db.increment_trigger(event_id)

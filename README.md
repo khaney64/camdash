@@ -104,6 +104,7 @@ curl http://camdash-host:8081/api/status
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/cameras` | List configured cameras, secrets masked. |
+| POST | `/api/cameras/{id}/enabled` | Body `{"enabled": bool}`. Toggles one camera's enabled flag without touching the rest of its settings; backs the Gallery tab's quick enable/disable chips. |
 | POST | `/api/cameras/discover` | ONVIF WS-Discovery scan of the local network. |
 | GET | `/api/cameras/{id}/probe` | ONVIF service/profile discovery for one camera. |
 | GET | `/api/cameras/{id}/sd` | SD-card redundancy status (Thingino only). |
@@ -168,7 +169,7 @@ The inbound trigger from a Synology Surveillance Station Action Rule (see Deploy
 ```shell
 curl -X POST "http://camdash-host:8081/api/webhooks/surveillance/patio-camera?secret=changeme"
 ```
-Response (`202`), same shape as manual capture, with `"source": "webhook"`. `401` if the secret is missing or wrong; `409` if the camera doesn't exist, is disabled, or still has `needs_credentials` set.
+Response (`202`), same shape as manual capture, with `"source": "webhook"`. `401` if the secret is missing or wrong; `409` if the camera doesn't exist or still has `needs_credentials` set. A webhook for a disabled camera is not an error — it's silently ignored (still `202`, with `{"ignored": true, "reason": "disabled"}`) and does not affect `/api/status`'s webhook error field, since disabling a camera is a deliberate choice, not a misconfiguration. Manually triggering capture on a disabled camera (Live tab buttons, or `POST /api/cameras/{id}/capture/...`) still returns `409`, since that's an explicit action that deserves feedback.
 
 A real Surveillance Station Action Rule call looks roughly like this (exact fields vary by DSM version and event type):
 ```json

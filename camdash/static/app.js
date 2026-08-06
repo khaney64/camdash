@@ -42,7 +42,22 @@ async function loadCameras() {
   const options=S.cameras.filter(c=>c.enabled).map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
   $('live-camera').innerHTML=options||'<option>No enabled cameras</option>';
   $('gallery-camera').innerHTML='<option value="">All cameras</option>'+S.cameras.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+  renderCameraChips();
   await updateRtspUrl();
+}
+function renderCameraChips(){
+  $('gallery-camera-chips').innerHTML=S.cameras.map(c=>
+    `<button type="button" class="camera-chip ${c.enabled?'on':'off'}" data-toggle-camera="${esc(c.id)}" aria-pressed="${c.enabled}" title="${c.enabled?'Enabled':'Disabled'} — click to toggle">${esc(c.name)}</button>`
+  ).join('');
+}
+async function toggleCameraEnabled(id){
+  const camera=S.cameras.find(c=>c.id===id);if(!camera)return;
+  const next=!camera.enabled;
+  try{
+    await api(`/api/cameras/${id}/enabled`,{method:'POST',body:JSON.stringify({enabled:next})});
+    toast(`${camera.name} ${next?'enabled':'disabled'}`);
+    await loadCameras();
+  }catch(e){toast(e.message,true)}
 }
 async function loadEvents() {
   const params=new URLSearchParams(); const camera=$('gallery-camera').value,status=$('gallery-status').value,q=$('gallery-query').value.trim();
@@ -239,6 +254,7 @@ async function submitChat(){
 
 function bind() {
   $('refresh-events').onclick=loadEvents; $('gallery-camera').onchange=loadEvents;$('gallery-status').onchange=loadEvents;$('gallery-query').oninput=debounce(loadEvents,350);
+  $('gallery-camera-chips').onclick=e=>{const chip=e.target.closest('[data-toggle-camera]');if(chip)toggleCameraEnabled(chip.dataset.toggleCamera);};
   $('gallery-grid').onclick=e=>{const del=e.target.closest('[data-delete-event]');if(del){deleteEvent(del.dataset.deleteEvent);return}const card=e.target.closest('[data-event]');if(card)openEvent(card.dataset.event)};
   $('event-dialog').querySelector('.dialog-close').onclick=()=>$('event-dialog').close();
   $('event-dialog').addEventListener('click',async e=>{

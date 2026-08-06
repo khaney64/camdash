@@ -53,6 +53,17 @@ def test_gallery_uses_in_app_delete_confirmation_and_media_lightbox():
     assert ".media-dialog-card { width: 100vw; height: 100vh" in styles
 
 
+def test_gallery_has_camera_enable_toggle_chips():
+    root = Path(__file__).parents[1] / "camdash" / "static"
+    source = (root / "app.js").read_text(encoding="utf-8")
+    markup = (root / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="gallery-camera-chips"' in markup
+    assert "data-toggle-camera=" in source
+    assert "toggleCameraEnabled" in source
+    assert "/api/cameras/${id}/enabled" in source
+
+
 def test_mjpeg_proxy_uses_shared_relay():
     source = (Path(__file__).parents[1] / "camdash" / "main.py").read_text(encoding="utf-8")
     assert "s.mjpeg_relay(camera_id, hd)" in source
@@ -301,6 +312,37 @@ def test_ptz_set_center_rejects_camera_without_ptz(tmp_path: Path, monkeypatch):
     with TestClient(app) as client:
         response = client.post("/api/cameras/cam/ptz/set-center")
         assert response.status_code == 409
+
+
+def test_set_camera_enabled_persists_flag(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
+        id="cam", name="Camera", host="192.0.2.20", enabled=True,
+    )])
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.main import app
+
+    with TestClient(app) as client:
+        response = client.post("/api/cameras/cam/enabled", json={"enabled": False})
+        assert response.status_code == 200
+        assert response.json() == {"id": "cam", "enabled": False}
+
+    reloaded, _ = load_config(config_path)
+    assert reloaded.camera("cam").enabled is False
+
+
+def test_set_camera_enabled_rejects_unknown_camera(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    save_config(AppConfig(data_dir=str(tmp_path)), config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.main import app
+
+    with TestClient(app) as client:
+        response = client.post("/api/cameras/missing/enabled", json={"enabled": False})
+        assert response.status_code == 404
 
 
 def test_chat_uses_camera_prompt_and_appends_reasoning(tmp_path: Path, monkeypatch):

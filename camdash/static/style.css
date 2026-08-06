@@ -76,6 +76,11 @@ textarea { resize: vertical; }
 .badge.complete { background: #123c27; color: #86efac; }
 .badge.failed { background: #47191d; color: #fca5a5; }
 .badge.capturing { background: #4a340a; color: #fde68a; }
+.camera-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.camera-chip { border: 1px solid transparent; border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; background: #273446; color: #cbd5e1; }
+.camera-chip:hover { border-color: #52667b; }
+.camera-chip.on { background: #123c27; color: #86efac; }
+.camera-chip.off { opacity: .55; }
 .empty { border: 1px dashed var(--line); border-radius: var(--radius); color: var(--muted); padding: 60px 20px; text-align: center; }
 .hidden { display: none !important; }
 .live-stage { min-height: 540px; position: relative; overflow: hidden; display: grid; place-items: center; background: #030609; }

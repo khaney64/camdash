@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from camdash.cameras import CameraError
+from camdash.cameras import CameraDisabledError, CameraError
 from camdash.capture import CaptureManager, _parse_timestamp, _select_detection_media, capture_profile, safe_unlink
 from camdash.config import AppConfig, CameraConfig, CaptureConfig
 
@@ -35,6 +35,34 @@ def test_select_detection_media_skips_media_without_a_thumb():
 
 def test_select_detection_media_returns_none_when_no_media_has_a_thumb():
     assert _select_detection_media([{"id": "m0", "thumb_path": None, "analysis": None}]) is None
+
+
+@pytest.mark.asyncio
+async def test_trigger_rejects_disabled_camera_with_disabled_specific_error(tmp_path: Path):
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[
+        CameraConfig(id="cam-1", name="Cam", host="192.0.2.1", enabled=False),
+    ])
+
+    async def broadcast(_message):
+        pass
+
+    manager = CaptureManager(None, lambda: cfg, broadcast, alerts_path=tmp_path / "alerts.yaml")
+    with pytest.raises(CameraDisabledError):
+        await manager.trigger("cam-1", "webhook")
+
+
+@pytest.mark.asyncio
+async def test_trigger_rejects_camera_needing_credentials_with_named_error(tmp_path: Path):
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[
+        CameraConfig(id="cam-1", name="Back Porch", host="192.0.2.1", enabled=True, needs_credentials=True),
+    ])
+
+    async def broadcast(_message):
+        pass
+
+    manager = CaptureManager(None, lambda: cfg, broadcast, alerts_path=tmp_path / "alerts.yaml")
+    with pytest.raises(CameraError, match="Back Porch needs credentials configured"):
+        await manager.trigger("cam-1", "webhook")
 
 
 def test_day_night_and_camera_override(tmp_path: Path):

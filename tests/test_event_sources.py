@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from camdash.cameras import CameraDisabledError
 from camdash.config import AppConfig, CameraConfig
 from camdash.event_sources import MotionSuppressor, WebhookSource, _describe_payload
 
@@ -74,6 +75,21 @@ async def test_webhook_routes_to_trigger():
     assert kwargs["source_key"]
     assert source.last_camera_id == "camera-one"
     assert source.last_received_at
+    assert source.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_webhook_silently_ignores_disabled_camera():
+    async def trigger(*args, **kwargs):
+        raise CameraDisabledError("camera is disabled")
+
+    config = AppConfig(cameras=[])
+    source = WebhookSource(lambda: config, trigger)
+    source.last_error = "stale error from a previous trigger"
+
+    result = await source.handle("camera-one", b"", "application/json")
+
+    assert result == {"ignored": True, "reason": "disabled", "camera_id": "camera-one"}
     assert source.last_error == ""
 
 

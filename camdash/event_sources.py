@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from .cameras import CameraDisabledError
 from .config import AppConfig
 
 
@@ -67,6 +68,10 @@ class WebhookSource:
             return {"duplicate": True, "suppressed": True}
         try:
             result = await self.trigger(camera_id, "webhook", source_key=str(uuid.uuid4()), triggered_at=received_at)
+        except CameraDisabledError:
+            LOG.info("Webhook: ignored, camera disabled camera=%s", camera_id)
+            self.last_error = ""
+            return {"ignored": True, "reason": "disabled", "camera_id": camera_id}
         except Exception as exc:
             self.last_error = str(exc)
             raise

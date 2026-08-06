@@ -27,6 +27,10 @@ class CameraError(RuntimeError):
     pass
 
 
+class CameraDisabledError(CameraError):
+    pass
+
+
 def credentialed(url: str, username: str, password: str) -> str:
     if not username or "@" in urlparse(url).netloc:
         return url

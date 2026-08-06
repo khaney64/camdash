@@ -111,6 +111,10 @@ class PtzRequest(BaseModel):
     coarse: bool = False
 
 
+class CameraEnabledRequest(BaseModel):
+    enabled: bool
+
+
 class AppState:
     def __init__(self):
         self.config, self.config_path = load_config()
@@ -345,6 +349,19 @@ async def put_settings(payload: dict[str, Any] = Body(...)):
 @app.get("/api/cameras")
 async def cameras():
     return public_config(state().config)["cameras"]
+
+
+@app.post("/api/cameras/{camera_id}/enabled")
+async def set_camera_enabled(camera_id: str, payload: CameraEnabledRequest):
+    s = state()
+    try:
+        camera = s.config.camera(camera_id)
+    except KeyError as exc:
+        raise HTTPException(404, "camera not found") from exc
+    camera.enabled = payload.enabled
+    save_config(s.config, s.config_path)
+    await s.broadcast({"type": "settings_update"})
+    return {"id": camera.id, "enabled": camera.enabled}
 
 
 @app.post("/api/cameras/discover")

@@ -5,7 +5,7 @@ from queue import Empty
 
 from fastapi.testclient import TestClient
 
-from camdash.config import AppConfig, CameraConfig, save_config
+from camdash.config import AppConfig, CameraConfig, load_config, save_config
 
 
 def test_mjpeg_viewer_queue_wait_is_bounded():
@@ -263,6 +263,44 @@ def test_live_info_returns_selected_rtsp_profile(tmp_path: Path, monkeypatch):
         main = client.get("/api/cameras/cam/live/info?hd=true").json()
         assert sub["rtsp_url"] == "rtsp://viewer:p%40ss%20word@192.0.2.20/ch1"
         assert main["rtsp_url"] == "rtsp://viewer:p%40ss%20word@192.0.2.20/ch0"
+
+
+def test_ptz_set_center_persists_detected_position(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
+        id="cam", name="Camera", host="192.0.2.20", adapter="thingino", ptz=True,
+    )])
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.cameras import ThinginoAdapter
+    monkeypatch.setattr(ThinginoAdapter, "current_position", lambda self: {"x": 42, "y": 17})
+
+    from camdash.main import app
+
+    with TestClient(app) as client:
+        response = client.post("/api/cameras/cam/ptz/set-center")
+        assert response.status_code == 200
+        assert response.json() == {"center_x": 42.0, "center_y": 17.0}
+
+    reloaded, _ = load_config(config_path)
+    assert reloaded.camera("cam").center_x == 42.0
+    assert reloaded.camera("cam").center_y == 17.0
+
+
+def test_ptz_set_center_rejects_camera_without_ptz(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path), cameras=[CameraConfig(
+        id="cam", name="Camera", host="192.0.2.20", adapter="thingino", ptz=False,
+    )])
+    save_config(cfg, config_path)
+    monkeypatch.setenv("CAMDASH_CONFIG", str(config_path))
+
+    from camdash.main import app
+
+    with TestClient(app) as client:
+        response = client.post("/api/cameras/cam/ptz/set-center")
+        assert response.status_code == 409
 
 
 def test_chat_uses_camera_prompt_and_appends_reasoning(tmp_path: Path, monkeypatch):

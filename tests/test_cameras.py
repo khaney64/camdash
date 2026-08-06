@@ -64,6 +64,48 @@ def test_thingino_center_and_home_use_configured_homing_position(command):
     ]
 
 
+def test_thingino_center_uses_configured_coordinates_when_set():
+    adapter = ThinginoAdapter(CameraConfig(
+        id="cam", name="Camera", host="192.0.2.30", adapter="thingino", token="secret",
+        center_x=120.0, center_y=80.0,
+    ))
+    adapter.session = FakeSession()
+
+    adapter.ptz("center")
+
+    assert adapter.session.calls == [
+        ("http://192.0.2.30/x/camdash-motor.cgi", {"token": "secret", "action": "center", "x": 120, "y": 80}, 50),
+    ]
+
+
+def test_thingino_home_ignores_configured_center_coordinates():
+    adapter = ThinginoAdapter(CameraConfig(
+        id="cam", name="Camera", host="192.0.2.30", adapter="thingino", token="secret",
+        center_x=120.0, center_y=80.0,
+    ))
+    adapter.session = FakeSession()
+
+    adapter.ptz("home")
+
+    assert adapter.session.calls == [
+        ("http://192.0.2.30/x/camdash-motor.cgi", {"token": "secret", "action": "center"}, 50),
+    ]
+
+
+def test_thingino_current_position_uses_zero_delta_move():
+    adapter = ThinginoAdapter(CameraConfig(
+        id="cam", name="Camera", host="192.0.2.30", adapter="thingino", token="secret",
+    ))
+    adapter.session = FakeSession()
+
+    position = adapter.current_position()
+
+    assert adapter.session.calls == [
+        ("http://192.0.2.30/x/json-motor.cgi", {"d": "g", "x": 0, "y": 0, "token": "secret"}, 8),
+    ]
+    assert position == {"x": 510, "y": 250}
+
+
 def test_thingino_ptz_rejects_missing_axis_calibration():
     adapter = ThinginoAdapter(CameraConfig(
         id="cam", name="Camera", host="192.0.2.30", adapter="thingino", token="secret",

@@ -47,9 +47,13 @@ query_param() {
 }
 
 center_motors() {
-	pos_0=$(jct /etc/thingino.json get motors.pos_0 2>/dev/null)
-	x=$(printf '%s' "$pos_0" | cut -d, -f1)
-	y=$(printf '%s' "$pos_0" | cut -d, -f2)
+	x=$(query_param x)
+	y=$(query_param y)
+	if [ -z "$x" ] || [ -z "$y" ]; then
+		pos_0=$(jct /etc/thingino.json get motors.pos_0 2>/dev/null)
+		x=$(printf '%s' "$pos_0" | cut -d, -f1)
+		y=$(printf '%s' "$pos_0" | cut -d, -f2)
+	fi
 	case "$x:$y" in
 		*[!0-9,:]*) printf '{"supported":true,"healthy":false,"requires_reboot":false,"error":"Thingino motor home position is invalid"}\n'; return ;;
 		:) printf '{"supported":true,"healthy":false,"requires_reboot":false,"error":"Thingino motor home position is not configured"}\n'; return ;;

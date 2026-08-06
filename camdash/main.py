@@ -397,6 +397,29 @@ async def ptz(camera_id: str, payload: PtzRequest):
         raise HTTPException(502, str(exc)) from exc
 
 
+@app.post("/api/cameras/{camera_id}/ptz/set-center")
+async def ptz_set_center(camera_id: str):
+    try:
+        s = state()
+        camera = s.config.camera(camera_id)
+        if not camera.ptz:
+            raise HTTPException(409, "PTZ is disabled for this camera")
+        adapter = adapter_for(camera)
+        position = await asyncio.to_thread(adapter.current_position)
+        camera.center_x = float(position["x"])
+        camera.center_y = float(position["y"])
+        save_config(s.config, s.config_path)
+        await s.broadcast({"type": "settings_update"})
+        LOG.info(
+            "PTZ: center captured camera=%s x=%s y=%s", camera_id, camera.center_x, camera.center_y,
+        )
+        return {"center_x": camera.center_x, "center_y": camera.center_y}
+    except KeyError as exc:
+        raise HTTPException(404, "camera not found") from exc
+    except CameraError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @app.get("/api/cameras/{camera_id}/ptz/status")
 async def ptz_status(camera_id: str):
     try:

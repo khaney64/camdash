@@ -82,6 +82,8 @@ class CameraConfig:
     record_stream: str = "main"
     prompt_override: str = ""
     ptz: bool = False
+    center_x: float | None = None
+    center_y: float | None = None
     sd_redundancy: bool = False
     capture: dict[str, Any] = field(default_factory=dict)
 

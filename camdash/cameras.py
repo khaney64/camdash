@@ -154,6 +154,9 @@ class CameraAdapter:
     def ptz(self, command: str, coarse: bool = False) -> dict[str, Any]:
         raise CameraError("PTZ is not supported")
 
+    def current_position(self) -> dict[str, Any]:
+        raise CameraError("position detection is not supported")
+
     def motor_status(self) -> dict[str, Any]:
         return {"supported": False, "healthy": False, "error": "motor control is not supported"}
 
@@ -200,14 +203,28 @@ class ThinginoAdapter(CameraAdapter):
             x, y = directions[command]
             params = self._motor_params()
             divisor = 10 if coarse else 100
-            args = {
+            return self._move({
                 "d": "g", "x": self._motor_delta(params, "steps_pan", x, divisor),
                 "y": self._motor_delta(params, "steps_tilt", y, divisor),
-            }
-        elif command in {"center", "home"}:
+            })
+        elif command == "home":
+            return self._motor_helper_request({"action": "center"}, timeout=50)
+        elif command == "center":
+            if self.config.center_x is not None and self.config.center_y is not None:
+                return self._motor_helper_request(
+                    {"action": "center", "x": int(self.config.center_x), "y": int(self.config.center_y)},
+                    timeout=50,
+                )
             return self._motor_helper_request({"action": "center"}, timeout=50)
         else:
             raise CameraError("invalid PTZ command")
+
+    def current_position(self) -> dict[str, Any]:
+        result = self._move({"d": "g", "x": 0, "y": 0})
+        return result["position"]
+
+    def _move(self, args: dict[str, Any]) -> dict[str, Any]:
+        args = dict(args)
         args["token"] = self.config.token
         try:
             response = self.session.get(
@@ -373,7 +390,11 @@ class OnvifAdapter(CameraAdapter):
             if command == "home":
                 self._ptz.GotoHomePosition({"ProfileToken": profile.token})
             elif command == "center":
-                self._ptz.AbsoluteMove({"ProfileToken": profile.token, "Position": {"PanTilt": {"x": 0, "y": 0}}})
+                center_x = self.config.center_x if self.config.center_x is not None else 0
+                center_y = self.config.center_y if self.config.center_y is not None else 0
+                self._ptz.AbsoluteMove({
+                    "ProfileToken": profile.token, "Position": {"PanTilt": {"x": center_x, "y": center_y}},
+                })
             elif command in vectors:
                 x, y = vectors[command]
                 self._ptz.RelativeMove({"ProfileToken": profile.token, "Translation": {"PanTilt": {"x": x, "y": y}}})
@@ -382,6 +403,17 @@ class OnvifAdapter(CameraAdapter):
             return {"driver": "onvif", "requested": {"command": command, "coarse": coarse}}
         except Exception as exc:
             raise CameraError(f"ONVIF PTZ failed: {exc}") from exc
+
+    def current_position(self) -> dict[str, Any]:
+        try:
+            if self._ptz is None:
+                self._ptz = self._client().create_ptz_service()
+            profile = self._profile(True)
+            status = self._ptz.GetStatus({"ProfileToken": profile.token})
+            pan_tilt = status.Position.PanTilt
+            return {"x": pan_tilt.x, "y": pan_tilt.y}
+        except Exception as exc:
+            raise CameraError(f"ONVIF position query failed: {exc}") from exc
 
 
 def adapter_for(config: CameraConfig) -> CameraAdapter:

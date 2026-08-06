@@ -137,21 +137,24 @@ class CaptureManager:
             errors.append(f"snapshots: {exc}")
             LOG.exception("snapshot capture failed camera=%s event=%s", camera.id, event_id)
 
-        remove_person_only = False
+        remove_reason: str | None = None
         if snapshots:
             try:
-                remove_person_only = await self._analyze(event, camera, snapshots)
+                remove_reason = await self._analyze(
+                    event, camera, snapshots, video_path=video_path, video_duration=video_duration,
+                    video_started_at=video_started_at, event_dir=event_dir,
+                )
             except Exception as exc:
                 errors.append(f"analysis: {exc}")
                 LOG.exception("analysis failed event=%s", event_id)
 
-        if remove_person_only:
+        if remove_reason:
             current = self.db.get_event(event_id)
             if current:
                 self.delete_event_files(current)
                 self.db.delete_event(event_id)
-            await self.broadcast({"type": "event_deleted", "event_id": event_id, "reason": "person_only"})
-            LOG.info("Capture: event removed camera=%s event=%s reason=person_only", camera.id, event_id)
+            await self.broadcast({"type": "event_deleted", "event_id": event_id, "reason": remove_reason})
+            LOG.info("Capture: event removed camera=%s event=%s reason=%s", camera.id, event_id, remove_reason)
             await asyncio.sleep(max(0, capture.cooldown_seconds))
             return
 
@@ -280,25 +283,39 @@ class CaptureManager:
         )
         return row
 
-    async def _analyze(self, event: dict[str, Any], camera: CameraConfig, snapshots: list[dict[str, Any]]) -> bool:
+    async def _analyze(self, event: dict[str, Any], camera: CameraConfig, snapshots: list[dict[str, Any]],
+                       video_path: Path | None = None, video_duration: float = 0.0,
+                       video_started_at: str | None = None, event_dir: Path | None = None) -> str | None:
         cfg = self.config_getter()
         prompt = camera.prompt_override.strip() or cfg.analysis.prompt
-        results = []
-        analyzable = [media for media in snapshots if media.get("path")]
+        all_media = list(snapshots)
+        analyzable = [media for media in all_media if media.get("path")]
         LOG.info("Analysis: processing %d image(s) camera=%s event=%s", len(analyzable), camera.id, event["id"])
-        for index, media in enumerate(analyzable, 1):
-            if not media.get("path"):
-                continue
-            LOG.info("Analysis: image %d/%d analyzing camera=%s event=%s media=%s", index, len(analyzable), camera.id, event["id"], media["id"])
-            result = await asyncio.to_thread(analyzer.analyze_image, Path(media["path"]), cfg.analysis, prompt)
-            results.append(result)
-            self.db.update_media(media["id"], analyzed=True, analysis_json=result)
-            await self.broadcast({"type": "analysis_update", "event_id": event["id"], "media_id": media["id"], "analysis": result})
-            detections = _detection_summary(result)
-            if result.get("error"):
-                LOG.warning("Analysis: image %d/%d failed camera=%s media=%s error=%s", index, len(analyzable), camera.id, media["id"], result["error"])
-            else:
-                LOG.info("Analysis: image %d/%d complete camera=%s media=%s detections=%s", index, len(analyzable), camera.id, media["id"], detections)
+        results = await self._analyze_images(event, camera, analyzable, prompt, cfg)
+
+        if (
+            cfg.analysis.remove_empty_images
+            and video_path is not None and event_dir is not None and video_started_at is not None
+            and video_duration > 0 and video_path.exists()
+            and not analyzer.aggregate(results).get("detections")
+        ):
+            LOG.info(
+                "Analysis: initial images empty, scanning video every %ds camera=%s event=%s",
+                cfg.analysis.empty_scan_interval_seconds, camera.id, event["id"],
+            )
+            scanned_media = await self._scan_video_interval(
+                video_path, event, event_dir, video_duration, video_started_at,
+                cfg.analysis.empty_scan_interval_seconds, start_index=len(all_media),
+            )
+            if scanned_media:
+                all_media.extend(scanned_media)
+                scan_analyzable = [media for media in scanned_media if media.get("path")]
+                LOG.info(
+                    "Analysis: processing %d additional scanned image(s) camera=%s event=%s",
+                    len(scan_analyzable), camera.id, event["id"],
+                )
+                results.extend(await self._analyze_images(event, camera, scan_analyzable, prompt, cfg))
+
         aggregate = analyzer.aggregate(results)
         self.db.update_event(event["id"], analysis_json=aggregate)
         failures = [str(result["error"]) for result in results if result.get("error")]
@@ -309,12 +326,15 @@ class CaptureManager:
             for detection in aggregate.get("detections", [])
             if detection.get("label")
         }
+        if cfg.analysis.remove_empty_images and results and not labels:
+            LOG.info("Analysis: empty event marked for removal camera=%s event=%s", camera.id, event["id"])
+            return "empty"
         if cfg.analysis.remove_person_only_images and labels and labels <= {"person", "human", "legs"}:
             LOG.info("Analysis: person-only event marked for removal camera=%s event=%s", camera.id, event["id"])
-            return True
+            return "person_only"
         event_with_analysis = self.db.get_event(event["id"]) or event
         if cfg.analysis.alerts_enabled:
-            first = next((Path(m["thumb_path"]) for m in snapshots if m.get("thumb_path")), None)
+            first = next((Path(m["thumb_path"]) for m in all_media if m.get("thumb_path")), None)
             alert = await asyncio.to_thread(self.alerts.evaluate, event_with_analysis, first,
                                             cfg.analysis.alert_cooldown_minutes * 60,
                                             cfg.analysis.alert_rules_enabled)
@@ -328,7 +348,36 @@ class CaptureManager:
             "Analysis: done camera=%s event=%s images=%d detections=%s errors=%d",
             camera.id, event["id"], len(results), _detection_summary(aggregate), len(failures),
         )
-        return False
+        return None
+
+    async def _analyze_images(self, event: dict[str, Any], camera: CameraConfig, media_list: list[dict[str, Any]],
+                              prompt: str, cfg: AppConfig) -> list[dict[str, Any]]:
+        results = []
+        total = len(media_list)
+        for index, media in enumerate(media_list, 1):
+            LOG.info("Analysis: image %d/%d analyzing camera=%s event=%s media=%s", index, total, camera.id, event["id"], media["id"])
+            result = await asyncio.to_thread(analyzer.analyze_image, Path(media["path"]), cfg.analysis, prompt)
+            results.append(result)
+            self.db.update_media(media["id"], analyzed=True, analysis_json=result)
+            await self.broadcast({"type": "analysis_update", "event_id": event["id"], "media_id": media["id"], "analysis": result})
+            detections = _detection_summary(result)
+            if result.get("error"):
+                LOG.warning("Analysis: image %d/%d failed camera=%s media=%s error=%s", index, total, camera.id, media["id"], result["error"])
+            else:
+                LOG.info("Analysis: image %d/%d complete camera=%s media=%s detections=%s", index, total, camera.id, media["id"], detections)
+        return results
+
+    async def _scan_video_interval(self, video_path: Path, event: dict[str, Any], event_dir: Path,
+                                   video_duration: float, video_started_at: str,
+                                   interval_seconds: int, start_index: int) -> list[dict[str, Any]]:
+        media: list[dict[str, Any]] = []
+        offset = float(interval_seconds)
+        index = start_index
+        while offset < video_duration - 0.1:
+            media.append(await self._snapshot_from_video(video_path, event, event_dir, index, offset, video_started_at))
+            index += 1
+            offset += interval_seconds
+        return media
 
     def delete_event_files(self, event: dict[str, Any]) -> None:
         for media in event.get("media", []):

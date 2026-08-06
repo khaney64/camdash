@@ -57,6 +57,8 @@ class AnalysisConfig:
     alert_cooldown_minutes: int = 30
     alert_rules_enabled: dict[str, bool] = field(default_factory=dict)
     remove_person_only_images: bool = False
+    remove_empty_images: bool = False
+    empty_scan_interval_seconds: int = 5
 
 
 @dataclass(slots=True)
@@ -169,6 +171,8 @@ def _validate(cfg: AppConfig) -> None:
     )
     if cfg.analysis.remove_person_only_images and person_enabled:
         raise ValueError("person alerts and person-only image removal cannot both be enabled")
+    if not 1 <= cfg.analysis.empty_scan_interval_seconds <= 300:
+        raise ValueError("empty scan interval must be between 1 and 300 seconds")
 
 
 def save_config(cfg: AppConfig, path: Path) -> None:

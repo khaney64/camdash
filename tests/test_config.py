@@ -80,3 +80,18 @@ def test_analysis_generation_settings_round_trip_and_validate(tmp_path: Path):
     loaded.analysis.temperature = 1.1
     with pytest.raises(ValueError, match="temperature"):
         save_config(loaded, path)
+
+
+def test_empty_scan_interval_round_trip_and_validate(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.analysis.remove_empty_images = True
+    cfg.analysis.empty_scan_interval_seconds = 10
+    save_config(cfg, path)
+    loaded, _ = load_config(path)
+    assert loaded.analysis.remove_empty_images is True
+    assert loaded.analysis.empty_scan_interval_seconds == 10
+
+    loaded.analysis.empty_scan_interval_seconds = 0
+    with pytest.raises(ValueError, match="empty scan interval"):
+        save_config(loaded, path)

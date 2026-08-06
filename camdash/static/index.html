@@ -115,6 +115,7 @@
             <div><button type="button" class="button" id="test-alert">Send test</button><span id="test-alert-status" class="muted"></span></div>
           </div>
           <div class="alert-row"><label>Cooldown (minutes) per rule<input name="alert_cooldown_minutes" type="number" min="0" max="1440"></label></div>
+          <div class="alert-row"><label class="switch"><input name="remove_empty_images" type="checkbox"><span>Remove empty images</span></label><label>Scan interval (seconds)<input name="empty_scan_interval_seconds" type="number" min="1" max="300"></label></div>
           <div id="alert-rule-toggles" class="alert-rules"></div>
           <div class="alert-actions"><span id="alert-settings-message" class="message"></span><button type="button" class="button primary" id="save-alerts">Save alerts</button></div>
         </form>

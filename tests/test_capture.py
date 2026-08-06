@@ -61,7 +61,7 @@ async def test_person_only_analysis_requests_event_removal(tmp_path: Path, monke
         camera,
         [{"id": "media-1", "path": str(tmp_path / "capture.jpg"), "thumb_path": None}],
     )
-    assert remove is True
+    assert remove == "person_only"
 
 
 @pytest.mark.asyncio
@@ -213,9 +213,9 @@ async def test_video_recording_failure_falls_back_to_camera_snapshots(tmp_path: 
     async def video_snapshot(*_args):
         raise AssertionError("missing recording must use camera snapshots")
 
-    async def fake_analyze(*_args):
+    async def fake_analyze(*_args, **_kwargs):
         calls.append("analyze")
-        return False
+        return None
 
     monkeypatch.setattr("camdash.capture.adapter_for", lambda _camera: FakeAdapter())
     monkeypatch.setattr(manager, "_record_video", failed_record)
@@ -229,6 +229,179 @@ async def test_video_recording_failure_falls_back_to_camera_snapshots(tmp_path: 
     }, camera, capture)
 
     assert calls == ["record", "snapshot-0", "snapshot-1", "analyze"]
+
+
+@pytest.mark.asyncio
+async def test_scan_video_interval_generates_expected_offsets(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    calls = []
+
+    async def fake_snapshot_from_video(_video_path, _event, _event_dir, index, offset, _started_at):
+        calls.append((index, round(offset, 3)))
+        return {"id": f"scan-{index}", "kind": "snapshot", "path": str(tmp_path / f"scan-{index}.jpg")}
+
+    async def broadcast(_message):
+        pass
+
+    manager = CaptureManager(object(), lambda: cfg, broadcast)
+    monkeypatch.setattr(manager, "_snapshot_from_video", fake_snapshot_from_video)
+
+    media = await manager._scan_video_interval(
+        tmp_path / "clip.mp4", {"id": "event-1"}, tmp_path, video_duration=17.0,
+        video_started_at="2026-08-06T00:00:00+00:00", interval_seconds=5, start_index=2,
+    )
+
+    assert calls == [(2, 5.0), (3, 10.0), (4, 15.0)]
+    assert len(media) == 3
+
+
+@pytest.mark.asyncio
+async def test_remove_empty_images_scans_video_and_deletes_when_still_empty(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.analysis.enabled = True
+    cfg.analysis.remove_empty_images = True
+    cfg.analysis.empty_scan_interval_seconds = 5
+    camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1")
+
+    class FakeDatabase:
+        analysis = None
+
+        def update_media(self, *args, **kwargs):
+            pass
+
+        def update_event(self, event_id, **values):
+            self.analysis = values.get("analysis_json", self.analysis)
+
+        def get_event(self, event_id):
+            return {"id": event_id, "camera_name": "Cam", "triggered_at": "now", "analysis": self.analysis}
+
+    async def broadcast(_message):
+        pass
+
+    monkeypatch.setattr("camdash.capture.analyzer.analyze_image", lambda *args: {"description": "", "detections": []})
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"video")
+    scan_calls = []
+
+    async def fake_snapshot_from_video(_video_path, _event, _event_dir, index, offset, _started_at):
+        scan_calls.append((index, offset))
+        path = tmp_path / f"scan-{index}.jpg"
+        path.write_bytes(b"jpeg")
+        return {"id": f"scan-{index}", "kind": "snapshot", "path": str(path), "thumb_path": None}
+
+    manager = CaptureManager(FakeDatabase(), lambda: cfg, broadcast)
+    monkeypatch.setattr(manager, "_snapshot_from_video", fake_snapshot_from_video)
+    initial_snapshot_path = tmp_path / "initial.jpg"
+    initial_snapshot_path.write_bytes(b"jpeg")
+
+    remove = await manager._analyze(
+        {"id": "event-1", "camera_name": "Cam", "triggered_at": "now"},
+        camera,
+        [{"id": "media-1", "path": str(initial_snapshot_path), "thumb_path": None}],
+        video_path=video_path, video_duration=17.0,
+        video_started_at="2026-08-06T00:00:00+00:00", event_dir=tmp_path,
+    )
+
+    assert remove == "empty"
+    assert scan_calls == [(1, 5.0), (2, 10.0), (3, 15.0)]
+
+
+@pytest.mark.asyncio
+async def test_remove_empty_images_keeps_event_when_scan_finds_detection(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.analysis.enabled = True
+    cfg.analysis.remove_empty_images = True
+    cfg.analysis.empty_scan_interval_seconds = 5
+    camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1")
+
+    class FakeDatabase:
+        analysis = None
+
+        def update_media(self, *args, **kwargs):
+            pass
+
+        def update_event(self, event_id, **values):
+            self.analysis = values.get("analysis_json", self.analysis)
+
+        def get_event(self, event_id):
+            return {"id": event_id, "camera_name": "Cam", "triggered_at": "now", "analysis": self.analysis}
+
+    async def broadcast(_message):
+        pass
+
+    def fake_analyze_image(path, *_args):
+        if "scan" in str(path):
+            return {"description": "A raccoon", "detections": [{"label": "raccoon", "confidence": 8}]}
+        return {"description": "", "detections": []}
+
+    monkeypatch.setattr("camdash.capture.analyzer.analyze_image", fake_analyze_image)
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"video")
+
+    async def fake_snapshot_from_video(_video_path, _event, _event_dir, index, offset, _started_at):
+        path = tmp_path / f"scan-{index}.jpg"
+        path.write_bytes(b"jpeg")
+        return {"id": f"scan-{index}", "kind": "snapshot", "path": str(path), "thumb_path": None}
+
+    manager = CaptureManager(FakeDatabase(), lambda: cfg, broadcast)
+    monkeypatch.setattr(manager, "_snapshot_from_video", fake_snapshot_from_video)
+    initial_snapshot_path = tmp_path / "initial.jpg"
+    initial_snapshot_path.write_bytes(b"jpeg")
+
+    remove = await manager._analyze(
+        {"id": "event-1", "camera_name": "Cam", "triggered_at": "now"},
+        camera,
+        [{"id": "media-1", "path": str(initial_snapshot_path), "thumb_path": None}],
+        video_path=video_path, video_duration=17.0,
+        video_started_at="2026-08-06T00:00:00+00:00", event_dir=tmp_path,
+    )
+
+    assert remove is None
+
+
+@pytest.mark.asyncio
+async def test_remove_empty_images_disabled_skips_video_scan(tmp_path: Path, monkeypatch):
+    cfg = AppConfig(data_dir=str(tmp_path))
+    cfg.analysis.enabled = True
+    camera = CameraConfig(id="cam-1", name="Cam", host="192.0.2.1")
+
+    class FakeDatabase:
+        def update_media(self, *args, **kwargs):
+            pass
+
+        def update_event(self, *args, **kwargs):
+            pass
+
+        def get_event(self, event_id):
+            return {"id": event_id, "camera_name": "Cam", "triggered_at": "now"}
+
+    async def broadcast(_message):
+        pass
+
+    monkeypatch.setattr("camdash.capture.analyzer.analyze_image", lambda *args: {"description": "", "detections": []})
+
+    async def fake_snapshot_from_video(*_args):
+        raise AssertionError("should not scan when remove_empty_images is disabled")
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"video")
+
+    manager = CaptureManager(FakeDatabase(), lambda: cfg, broadcast)
+    monkeypatch.setattr(manager, "_snapshot_from_video", fake_snapshot_from_video)
+    initial_snapshot_path = tmp_path / "initial.jpg"
+    initial_snapshot_path.write_bytes(b"jpeg")
+
+    remove = await manager._analyze(
+        {"id": "event-1", "camera_name": "Cam", "triggered_at": "now"},
+        camera,
+        [{"id": "media-1", "path": str(initial_snapshot_path), "thumb_path": None}],
+        video_path=video_path, video_duration=17.0,
+        video_started_at="2026-08-06T00:00:00+00:00", event_dir=tmp_path,
+    )
+
+    assert remove is None
 
 
 @pytest.mark.asyncio
@@ -279,9 +452,9 @@ async def test_event_records_video_before_deriving_snapshots(tmp_path: Path, mon
         database.media.append(row)
         return row
 
-    async def fake_analyze(_event, _camera, _snapshots):
+    async def fake_analyze(_event, _camera, _snapshots, **_kwargs):
         calls.append("analyze")
-        return False
+        return None
 
     monkeypatch.setattr("camdash.capture.adapter_for", lambda _camera: FakeAdapter())
     monkeypatch.setattr(manager, "_record_video", fake_record)

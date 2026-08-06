@@ -36,6 +36,8 @@ analysis:
   alert_cooldown_minutes: 30
   alert_rules_enabled: {}
   remove_person_only_images: false
+  remove_empty_images: false
+  empty_scan_interval_seconds: 5
 
 cameras:
   - id: patio-camera

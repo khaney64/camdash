@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from camdash.cameras import CameraError, ThinginoAdapter
 from camdash.config import CameraConfig
@@ -84,3 +85,18 @@ def test_thingino_motor_health_uses_authenticated_helper():
     )
 
     assert adapter.motor_status()["healthy"] is True
+
+
+def test_thingino_sd_status_wraps_connection_errors():
+    adapter = ThinginoAdapter(CameraConfig(
+        id="cam", name="Camera", host="192.0.2.30", adapter="thingino", token="secret",
+    ))
+    adapter.session = FakeSession()
+
+    def raise_connection_error(url, params=None, timeout=None):
+        raise requests.ConnectionError("refused")
+
+    adapter.session.get = raise_connection_error
+
+    with pytest.raises(CameraError, match="Thingino SD status request failed"):
+        adapter.sd_status()

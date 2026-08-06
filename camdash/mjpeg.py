@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import queue as thread_queue
 import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
@@ -159,12 +160,14 @@ class MjpegRelay:
         name: str,
         open_streams: Sequence[Callable[[], Any]],
         retry_seconds: float = 1.0,
+        idle_timeout: float = 30.0,
     ):
         if not open_streams:
             raise ValueError("at least one MJPEG source is required")
         self.name = name
         self._open_streams = tuple(open_streams)
         self._retry_seconds = retry_seconds
+        self._idle_timeout = idle_timeout
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._closed = False
@@ -172,6 +175,8 @@ class MjpegRelay:
         self._response: Any = None
         self._next_token = 1
         self._subscribers: dict[int, thread_queue.Queue[bytes]] = {}
+        self._idle_since: float | None = None
+        self._idle_stopped = False
 
     def subscribe(self) -> tuple[int, thread_queue.Queue[bytes]]:
         queue: thread_queue.Queue[bytes] = thread_queue.Queue(maxsize=1)
@@ -181,6 +186,8 @@ class MjpegRelay:
             token = self._next_token
             self._next_token += 1
             self._subscribers[token] = queue
+            self._idle_since = None
+            self._idle_stopped = False
             self._stop.clear()
             if self._thread is None:
                 self._start_worker_locked()
@@ -189,6 +196,8 @@ class MjpegRelay:
     def unsubscribe(self, token: int) -> None:
         with self._lock:
             self._subscribers.pop(token, None)
+            if not self._subscribers and not self._closed:
+                self._idle_since = time.monotonic()
 
     def close(self) -> None:
         response = None
@@ -208,6 +217,14 @@ class MjpegRelay:
         with self._lock:
             return len(self._subscribers)
 
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._thread is not None
+
+    def _idle_expired_locked(self) -> bool:
+        return self._idle_since is not None and (time.monotonic() - self._idle_since) > self._idle_timeout
+
     def _start_worker_locked(self) -> None:
         self._thread = threading.Thread(
             target=self._run, name=f"mjpeg-{self.name}", daemon=True,
@@ -221,6 +238,9 @@ class MjpegRelay:
                 with self._lock:
                     if self._closed:
                         return
+                    if self._idle_expired_locked():
+                        self._idle_stopped = True
+                        return
                 opener = self._open_streams[source_index % len(self._open_streams)]
                 source_index += 1
                 response = None
@@ -232,8 +252,12 @@ class MjpegRelay:
                     delivered = False
                     for frame in mjpeg_frames(response_chunks(response)):
                         delivered = True
-                        if self._stop.is_set():
-                            return
+                        with self._lock:
+                            if self._stop.is_set():
+                                return
+                            if self._idle_expired_locked():
+                                self._idle_stopped = True
+                                return
                         self._broadcast(frame)
                     if not self._stop.is_set():
                         reason = "ended" if delivered else "returned no frames"
@@ -255,10 +279,13 @@ class MjpegRelay:
             restart = False
             with self._lock:
                 self._thread = None
-                restart = not self._closed
+                idle_stopped = self._idle_stopped
+                restart = not self._closed and not idle_stopped
                 if restart:
                     self._stop.clear()
                     self._start_worker_locked()
+            if idle_stopped:
+                LOG.info("MJPEG relay %s stopped after %.0fs idle", self.name, self._idle_timeout)
 
     def _broadcast(self, frame: bytes) -> None:
         with self._lock:

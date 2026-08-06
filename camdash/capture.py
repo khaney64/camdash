@@ -31,7 +31,6 @@ class CaptureManager:
         self.config_getter = config_getter
         self.broadcast = broadcast
         self.inflight: dict[str, tuple[str, asyncio.Task]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
         self.alerts = AlertEngine(alerts_path or self.config_getter().root / "alerts.yaml")
 
     async def trigger(self, camera_id: str, source: str, source_key: str | None = None,

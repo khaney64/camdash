@@ -171,6 +171,51 @@ async def test_relay_shares_one_upstream_and_fans_out_frames():
 
 
 @pytest.mark.asyncio
+async def test_relay_stops_upstream_after_idle_timeout():
+    opens = 0
+
+    def open_stream():
+        nonlocal opens
+        opens += 1
+        return FakeResponse([JPEG_1])
+
+    relay = MjpegRelay("idle-test", [open_stream], retry_seconds=0.01, idle_timeout=0.05)
+    token, queue = relay.subscribe()
+
+    assert await asyncio.wait_for(asyncio.to_thread(queue.get), 2) == JPEG_1
+
+    relay.unsubscribe(token)
+    await asyncio.sleep(0.3)
+
+    assert relay.is_running is False
+    opens_after_idle_stop = opens
+    await asyncio.sleep(0.1)
+    assert opens == opens_after_idle_stop
+
+
+@pytest.mark.asyncio
+async def test_relay_resumes_after_idle_stop_on_new_subscriber():
+    opens = 0
+
+    def open_stream():
+        nonlocal opens
+        opens += 1
+        return FakeResponse([JPEG_1])
+
+    relay = MjpegRelay("idle-resume", [open_stream], retry_seconds=0.01, idle_timeout=0.05)
+    token, queue = relay.subscribe()
+    assert await asyncio.wait_for(asyncio.to_thread(queue.get), 2) == JPEG_1
+    relay.unsubscribe(token)
+    await asyncio.sleep(0.3)
+    assert relay.is_running is False
+
+    token2, queue2 = relay.subscribe()
+    assert await asyncio.wait_for(asyncio.to_thread(queue2.get), 2) == JPEG_1
+    relay.unsubscribe(token2)
+    relay.close()
+
+
+@pytest.mark.asyncio
 async def test_relay_reconnects_to_fallback_source():
     failed = FakeResponse([])
     recovered = FakeResponse([JPEG_2], hold_open=True)

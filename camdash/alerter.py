@@ -19,7 +19,7 @@ LOG = logging.getLogger(__name__)
 class AlertEngine:
     def __init__(self, rules_path: Path):
         self.rules_path = rules_path
-        self.last_fired: dict[str, float] = {}
+        self.last_fired: dict[tuple[str, str], float] = {}
 
     def rules(self) -> list[dict[str, Any]]:
         try:
@@ -41,6 +41,7 @@ class AlertEngine:
         analysis = event.get("analysis") or {}
         detections = {str(d.get("label", "")).lower() for d in analysis.get("detections", [])}
         description = str(analysis.get("description", "")).lower()
+        camera_id = str(event.get("camera_id", ""))
         triggered, errors = [], []
         matching, catch_all = [], []
         enabled = {str(name).lower(): bool(value) for name, value in (enabled_rules or {}).items()}
@@ -54,21 +55,24 @@ class AlertEngine:
             keywords = {str(k).lower() for k in rule.get("keywords", [])}
             if keywords.intersection(detections) or any(k in description for k in keywords):
                 matching.append(rule)
+        matched = bool(matching or catch_all)
         now = time.time()
         eligible = []
         for rule in matching or catch_all:
             name = str(rule.get("name", "unnamed"))
-            if now - self.last_fired.get(name, 0) < cooldown_seconds:
+            if now - self.last_fired.get((camera_id, name), 0) < cooldown_seconds:
                 continue
             eligible.append(rule)
 
         email_rules = [rule for rule in eligible if rule.get("action", "log") == "email"]
+        sent = False
         if email_rules:
             try:
                 names = [str(rule.get("name", "unnamed")) for rule in email_rules]
                 self._email(event, names, thumb)
+                sent = True
                 for name in names:
-                    self.last_fired[name] = now
+                    self.last_fired[(camera_id, name)] = now
                     triggered.append(name)
             except Exception as exc:
                 errors.append(f"{', '.join(names)}: {exc}")
@@ -79,9 +83,9 @@ class AlertEngine:
                 continue
             name = str(rule.get("name", "unnamed"))
             LOG.warning("alert [%s] camera=%s event=%s", name, event["camera_name"], event["id"])
-            self.last_fired[name] = now
+            self.last_fired[(camera_id, name)] = now
             triggered.append(name)
-        return {"triggered": triggered, "errors": errors}
+        return {"triggered": triggered, "errors": errors, "matched": matched, "sent": sent}
 
     def test_email(self) -> None:
         self._send("CAM Dashboard test", "Email alerts are configured correctly.", None)

@@ -3,10 +3,10 @@ from pathlib import Path
 from camdash.alerter import AlertEngine
 
 
-def event(label: str | None = None) -> dict:
+def event(label: str | None = None, camera_id: str = "camera-1") -> dict:
     detections = [{"label": label, "confidence": 9}] if label else []
     return {
-        "id": "event-1", "camera_name": "Camera", "triggered_at": "2026-08-02T12:00:00Z",
+        "id": "event-1", "camera_id": camera_id, "camera_name": "Camera", "triggered_at": "2026-08-02T12:00:00Z",
         "analysis": {"description": label or "", "detections": detections},
     }
 
@@ -63,4 +63,35 @@ alerts:
     result = engine.evaluate(value, None, 0)
 
     assert calls == [["Cat", "Wildlife"]]
-    assert result == {"triggered": ["Cat", "Wildlife"], "errors": []}
+    assert result == {"triggered": ["Cat", "Wildlife"], "errors": [], "matched": True, "sent": True}
+
+
+def test_evaluate_reports_matched_false_when_no_rule_matches(tmp_path: Path):
+    rules = tmp_path / "alerts.yaml"
+    rules.write_text("""
+alerts:
+  - name: Cat
+    keywords: [cat]
+    action: log
+""", encoding="utf-8")
+    result = AlertEngine(rules).evaluate(event("dog"), None, 0)
+    assert result == {"triggered": [], "errors": [], "matched": False, "sent": False}
+
+
+def test_cooldown_is_scoped_per_camera(tmp_path: Path):
+    rules = tmp_path / "alerts.yaml"
+    rules.write_text("""
+alerts:
+  - name: Person
+    keywords: [person]
+    action: log
+""", encoding="utf-8")
+    engine = AlertEngine(rules)
+
+    first = engine.evaluate(event("person", camera_id="camera-1"), None, 300)
+    second_same_camera = engine.evaluate(event("person", camera_id="camera-1"), None, 300)
+    second_other_camera = engine.evaluate(event("person", camera_id="camera-2"), None, 300)
+
+    assert first["triggered"] == ["Person"]
+    assert second_same_camera["triggered"] == []
+    assert second_other_camera["triggered"] == ["Person"]

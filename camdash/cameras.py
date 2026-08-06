@@ -294,10 +294,13 @@ class ThinginoAdapter(CameraAdapter):
         return direction * amount
 
     def sd_status(self) -> dict[str, Any]:
-        response = self.session.get(
-            f"http://{self.config.host}/x/tool-sdcard.cgi", params={"token": self.config.token}, timeout=8,
-        )
-        response.raise_for_status()
+        try:
+            response = self.session.get(
+                f"http://{self.config.host}/x/tool-sdcard.cgi", params={"token": self.config.token}, timeout=8,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise CameraError(f"Thingino SD status request failed: {type(exc).__name__}") from exc
         try:
             value = response.json()
             return {"supported": True, "configured": self.config.sd_redundancy, "status": value}

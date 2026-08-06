@@ -23,6 +23,14 @@ def test_free_text_is_preserved():
     assert result["detections"] == []
 
 
+def test_parse_result_flags_unparseable_text_for_retry():
+    assert parse_result("").get("unparseable") is True
+    assert parse_result("{not valid json").get("unparseable") is True
+    assert parse_result("Nothing visible").get("unparseable") is True
+    assert "unparseable" not in parse_result('{"detections":[]}')
+    assert "unparseable" not in parse_result('{"description":"A deer","detections":[{"label":"deer","confidence":7}]}')
+
+
 def test_local_chat_url_accepts_server_v1_or_full_endpoint():
     assert local_chat_url("http://llm:8080") == "http://llm:8080/v1/chat/completions"
     assert local_chat_url("http://llm:8080/v1/") == "http://llm:8080/v1/chat/completions"
@@ -33,13 +41,29 @@ def test_chat_prompt_requests_reasoning():
     assert with_reasoning("What is here?  ") == "What is here?\nInclude your reasoning."
 
 
-def test_empty_analysis_retries_with_double_thinking_budget(tmp_path: Path, monkeypatch):
+def test_well_formed_empty_response_does_not_retry(tmp_path: Path, monkeypatch):
+    image = tmp_path / "image.jpg"
+    image.write_bytes(b"image")
+    cfg = AnalysisConfig(enabled=True, thinking_budget=2048)
+    calls = []
+    monkeypatch.setattr(
+        analyzer, "_call",
+        lambda encoded, attempt, prompt: (calls.append(attempt.thinking_budget) or {"description": "", "detections": []}),
+    )
+
+    result = analyzer.analyze_image(image, cfg)
+
+    assert calls == [2048]
+    assert result == {"description": "", "detections": []}
+
+
+def test_invalid_response_retries_with_double_thinking_budget(tmp_path: Path, monkeypatch):
     image = tmp_path / "image.jpg"
     image.write_bytes(b"image")
     cfg = AnalysisConfig(enabled=True, thinking_budget=2048)
     budgets = []
     results = iter([
-        {"description": "", "detections": []},
+        {"description": "", "detections": [], "raw": "", "unparseable": True},
         {"description": "A cat", "detections": [{"label": "cat", "confidence": 8}]},
     ])
     monkeypatch.setattr(analyzer, "_call", lambda encoded, attempt, prompt: (budgets.append(attempt.thinking_budget) or next(results)))

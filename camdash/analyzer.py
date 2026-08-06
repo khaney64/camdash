@@ -37,14 +37,14 @@ def analyze_image(path: Path, cfg: AnalysisConfig, prompt: str | None = None) ->
     encoded = base64.b64encode(path.read_bytes()).decode()
     try:
         result = _call(encoded, cfg, effective_prompt)
-        if not result.get("description") and cfg.thinking_budget > 0:
+        if result.get("unparseable") and cfg.thinking_budget > 0:
             budget = cfg.thinking_budget * 2
-            LOG.warning("analysis empty response; retrying with thinking_budget=%d", budget)
+            LOG.warning("analysis returned an invalid/empty response; retrying with thinking_budget=%d", budget)
             result = _call(encoded, replace(cfg, thinking_budget=budget), effective_prompt)
-            if result.get("description"):
+            if not result.get("unparseable"):
                 LOG.info("analysis retry succeeded thinking_budget=%d", budget)
             else:
-                LOG.warning("analysis retry also returned empty thinking_budget=%d", budget)
+                LOG.warning("analysis retry still returned an invalid response thinking_budget=%d", budget)
         detections = result.get("detections") or []
         if (
             not result.get("error") and detections
@@ -133,7 +133,7 @@ def parse_result(text: str) -> dict[str, Any]:
                 normalized.append(detection)
         return {"description": str(parsed.get("description", "")), "detections": normalized, "raw": text}
     except (json.JSONDecodeError, TypeError, ValueError):
-        return {"description": text.strip(), "detections": [], "raw": text}
+        return {"description": text.strip(), "detections": [], "raw": text, "unparseable": True}
 
 
 def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
